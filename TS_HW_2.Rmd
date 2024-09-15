@@ -1,0 +1,315 @@
+---
+title: "AA502_TS_HW2_Erin"
+output: html_document
+date: "2024-08-30"
+---
+## Objective
+#### PJM is a regional transmission organization (RTO) that provides resources for the market of
+#### wholesale electricity in all or parts of 13 states and the District of Columbia (source: PJM.com).
+#### PJM, henceforth referred to as the client, would like to contract your services in understanding
+#### metered load Megawatts for the AEP Appalachian Power transmission zone. For this analysis,
+#### the client would like the data to be rolled up to total daily MW and averaged by month. The
+#### training data should be from August 2018-July 2022; the validation data set should be from
+#### August 2022-July 2023; and the test data should be from August 2023-July 2024. 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#read in libraries
+library(tidyverse)
+
+#read in energy ds
+energy_hw<-read_csv("https://raw.githubusercontent.com/sjsimmo2/TimeSeries/master/energy_F2024.csv")
+
+
+#convert datetime_beginning_ept from string to date and the summarize mw by day
+energy_daily<-energy_hw %>% 
+  mutate(date=(date(mdy_hm(datetime_beginning_ept))))%>%
+  group_by(date) %>%
+  dplyr::summarize(daily_mw=sum(mw))
+
+
+#get the average daily usage BY MONTH
+energy_monthly<-energy_daily %>% 
+  mutate(date_month=(mdy(paste(month(date),'-1-',year(date)))))%>%
+  group_by(date_month) %>%
+  dplyr::summarize(total_average_daily_mw=mean(daily_mw))
+
+
+energy_monthly_t.s<-energy_monthly %>%
+  mutate(Month=yearmonth(date_month)) %>%
+  as_tsibble(index = Month)
+```
+
+### Split into train, test validate
+```{r, split ds}
+#Training-August 2018 - July 2022,
+#Validation-August 2022 - July 2023
+#Test-August 2023 - July 2024. 
+energy_train<-energy_monthly %>%
+  filter(date_month<='2022-07-01')
+summary(energy_train)
+
+energy_validate<-energy_monthly %>%
+  filter((date_month>'2022-07-01') & (date_month<'2023-08-01'))
+
+energy_test<-energy_monthly %>%
+  filter(date_month>='2023-08-01')
+
+energy_monthly<-energy_monthly %>%
+  mutate(color_type=case_when(date_month<='2022-07-01'~'Training',
+                                       ((date_month>'2022-07-01') &(date_month<'2023-08-01')) ~'Validation',
+                                        date_month>='2023-08-01'~'Test'))
+
+#shows the entire dataset by avg daily mw usage wiht data splits
+splits<-energy_monthly%>%
+  ggplot(aes(date_month,total_average_daily_mw,color=color_type))+
+  geom_path(size=1.2)+
+  scale_color_manual(name="Splits",values = c("Training" = "black","Validation"='cornflowerblue', 
+                     "Test" = "#D55E00")) +
+  labs(x='Month',y='Average Daily Consumption (MW)',title='Average Daily Consumption (MW) Over Time With Splits')+
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right" ) +
+  scale_x_yearmonth(date_breaks = "6 months", date_labels = "%b %Y")
+
+
+ggsave(splits, 
+       filename = "splits.jpg",
+       device = "jpg",
+       height = 6, width = 12, units = "in")
+
+```
+
+### PLOT
+#### Visual of the training data set overlaid with the trend (be sure to indicate what
+#### type of decomposition was used).
+```{r}
+#make energy train into a tsibble, have to make sure the month is in the form tsibble wants
+energy_month_ts_train <- energy_train %>%
+  mutate(Month=yearmonth(date_month)) %>%
+  as_tsibble(index = Month)
+
+#check that is read in correct
+energy_month_ts_train
+  
+energy_month_ts_validate <- energy_validate %>%
+  mutate(Month=yearmonth(date_month)) %>%
+  as_tsibble(index = Month)
+
+energy_month_ts_test<- energy_test %>%
+  mutate(Month=yearmonth(date_month)) %>%
+  as_tsibble(index = Month)
+
+energy_time_plot<-energy_month_ts_train %>% autoplot(colour='blue')+
+ labs(y ="Total Avg Daily MW", x='Month',title = "Total Average Daily MW By Month" )
+
+ggsave(energy_time_plot, 
+       filename = "energy_time_plot.jpg",
+       device = "jpg",
+       height = 7, width = 9, units = "in")
+
+
+#STL decomp, and plot it
+energy_decomp <- energy_month_ts_train %>% model(stl = STL(total_average_daily_mw))
+
+full_decomp<-components(energy_decomp) %>% 
+  autoplot() + 
+  theme_classic()+
+  labs(y ="Average Daily Consumption (MW)", x='Month',title = "STl Decomposition of Average Daily Consumption (MW)" )
+
+ggsave(full_decomp, 
+       filename = "full_decomp.jpg",
+       device = "jpg",
+       height = 5, width = 12, units = "in")
+
+#overlay trend on dataset in a graph
+trend_overlay<-components(energy_decomp) %>% as_tsibble() %>%
+autoplot(total_average_daily_mw, colour="black") +
+geom_line(aes(y=trend), colour = "#D55E00") + 
+labs( y ="Average Daily Consumption (MW)", x='Month',title = "Average Daily Consumption (MW) With Trend Overlaid" )+
+theme_classic()
+
+ggsave(trend_overlay, 
+       filename = "trend_overlay.jpg",
+       device = "jpg",
+       height = 6, width = 12, units = "in")
+
+
+#lets try diff decomp, 
+
+#ARIMA DECOMP- can handle outliers
+#library(seasonal)
+
+
+#energy.tsob_train<-ts(energy.tsob_train,start=c(2018,8),frequency=12)
+
+#decom <- seas(energy.tsob_train, x11 = "")
+
+#x11_dcmp_t <- energy_month_ts_train |>
+#  model(x11 = X_13ARIMA_SEATS(total_average_daily_mw ~ x11())) %>%
+#  components()
+
+
+#graph
+#autoplot(x11_energy_dcmp)+ 
+#labs(title = "Decomposition of Average Daily MW USE With X-11.")
+
+#decomposed seasonality only 
+decomp_season_graph<-components(energy_decomp) %>% as_tsibble() %>%
+ggplot(aes(x=Month,y=season_year), colour="cornflowerblue")+
+geom_line(size=1.2,colour="cornflowerblue")+
+labs( y ="Average Daily Consumption (MW)", x='Month',title = "Seasonality Component of STL Decomposition" )+
+theme_classic()+
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right" ) +
+  scale_x_yearmonth(date_breaks = "6 months", date_labels = "%b %Y")
+  
+
+ggsave(decomp_season_graph, 
+       filename = "decomp_season_graph.jpg",
+       device = "jpg",
+       height = 6, width = 12, units = "in")
+
+
+#overlay seasonal on dataset in a graph
+seasonal_adj_w_trend<-components(energy_decomp) %>% as_tsibble() %>% 
+  ggplot(aes(x=Month))+
+  geom_line(aes(y=total_average_daily_mw,color='Original Series'),size=1) + 
+  geom_line(aes(y=season_adjust, color ="Seasonal Adjusted"),size=1.2)+
+  geom_line(aes(y=trend,color="Trend Only"),size=1.2) + 
+  scale_color_manual(values = c("Original Series"='grey',
+                                "Seasonal Adjusted" = "cornflowerblue", 
+                                "Trend Only" = "#D55E00")) +
+  labs(y = "Average Daily Consumption (MW)",
+       x='Month', 
+       title = "Seasonally Adjusted Average Daily Consumption (MW)",
+       color='Components')+
+  theme_classic()+
+  theme(plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right") +
+  scale_x_yearmonth(date_breaks = "6 months", date_labels = "%b %Y")
+  
+ggsave(seasonal_adj_w_trend, 
+       filename = "seasonal_adj_w_trend.jpg",
+       device = "jpg",
+       height = 6, width = 12, units = "in")
+
+
+#autoplot(season_year, colour="black") +
+#labs( y ="Total Avg Daily MW", title = "Total Avg Daily MW Season year" )+
+#scale_x_yearmonth(date_breaks = "4 month", date_labels = "%m-%Y")+
+#theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#strength of trend/seasonality
+energy_month_ts_train %>% features(total_average_daily_mw,feat_stl)
+
+```
+
+### ESM target is average daily MW per Month
+```{r, }
+#TEST ALL THE MODELS
+#From decomp, seasonality is present, trend is not as present
+
+#MAPES from belows test
+#HWAAA- 3.788538	
+#HWMultMAM-3.715035	 <-----------BEST IS HW multiplicative seasonal and Additive trend
+#HWauto	Test-5.199704
+#HWdAAdA-4.539581
+#HWdANA	-5.202978
+#HWdMAdM-4.364705
+#HWdMNM-4.990485
+#fit many different ESM models
+energy_fit <- energy_month_ts_train %>% 
+model(HWAAA = ETS(total_average_daily_mw ~ error("A") + trend("A") + season("A")),    
+      HWMultMAM = ETS(total_average_daily_mw ~ error("M") + trend("A") + season("M")),    
+      HWdMAdM = ETS(total_average_daily_mw ~ error("M") + trend("Ad") + season("M")),
+      HWdAAdA = ETS(total_average_daily_mw ~ error("A") + trend("Ad") + season("A")),
+      HWdANA = ETS(total_average_daily_mw ~ error("A") + trend("N") + season("A")),
+      HWdMNM = ETS(total_average_daily_mw ~ error("M") + trend("N") + season("M")),
+      HWauto= ETS(total_average_daily_mw))
+
+#forecast the mw, HWMult has the best MAPE
+energy_fc <- energy_fit %>% fabletools::forecast(h = 12)
+fabletools::accuracy(energy_fc, energy_month_ts_validate)
+
+
+```
+
+
+## PLOT BEST MODEL
+```{r, plot best model}
+#BEST MODEL (MAM)
+#multiplicative seasonality, MAPE for the validation set is 3.715035%
+MAM.energy<- energy_month_ts_train %>%  model(ETS(total_average_daily_mw ~ error("M") + 
+trend("A") + season("M")))
+energy.for <- MAM.energy %>%  fabletools::forecast(h = 12)
+
+#plot HWmult without confidence intervals, need to get legends for the lines
+forecast_plot<-energy.for %>% autoplot(energy_month_ts_validate, level = NULL) +  
+  geom_line(aes(y = .fitted,color='Original Series')
+            data = augment(MAM.energy),size=1.2) + 
+  geom_line(aes(y=total_average_daily_mw),size=1.2,col='#D55E00')
+  labs(y="Average Daily Consumption (MW)", 
+       x='Month',
+       title="TAverage Daily Consumption (MW) With Forecast") +
+  theme_classic()+
+  theme(plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right") +
+  scale_x_yearmonth(date_breaks = "6 months", date_labels = "%b %Y")
+
+
+  ggplot(aes(x=Month))+
+  geom_line(aes(y=log_mw,color='Original Series (Log Scale)'),size=1) + 
+  geom_line(aes(y=season_adjust, color ="Seasonal Adjusted"),size=1.2)+
+  geom_line(aes(y=trend,color="Trend"),size=1.2) + 
+  scale_color_manual(values = c("Original Series (Log Scale)"='grey',
+                                "Seasonal Adjusted" = "cornflowerblue", 
+                                "Trend" = "#D55E00")) +
+
+ggsave(forecast_plot, 
+       filename = "forecast_plot.jpg",
+       device = "jpg",
+       height = 6, width = 12, units = "in")
+
+```
+
+
+
+
+### PLaying around
+```{r, playing around}
+#CHECK ANOTHER (ANA)
+ANA.energy<- energy_month_ts_train %>%  model(ETS(total_average_daily_mw ~ error("A") + 
+trend("N") + season("A")))
+energy.for.ANA <- ANA.energy %>%  fabletools::forecast(h = 12)
+
+#plot HWmult
+energy.for.ANA %>% autoplot(energy_monthly_t.s) +  geom_line(aes(y = .fitted), 
+col="#D55E00", data = augment(ANA.energy)) +  
+labs(y="Avg Daily MW Per Month", title="Total MW Usage Over Time") +  
+guides(colour = "none")
+
+
+#CHECK ANOTHER (MNM)
+MNM.energy<- energy_month_ts_train %>%  model(ETS(total_average_daily_mw ~ error("M") + 
+trend("N") + season("M")))
+energy.for.MNM <- MNM.energy %>%  fabletools::forecast(h = 12)
+
+#plot HWmult
+energy.for.MNM %>% autoplot(energy_monthly_t.s) +  geom_line(aes(y = .fitted), 
+col="#D55E00", data = augment(MNM.energy)) +  
+labs(y="Avg Daily MW Per Month", title="Total MW Usage Over Time") +  
+guides(colour = "none")
+
+```
+

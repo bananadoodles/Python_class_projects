@@ -1,0 +1,94 @@
+---
+title: "AA502-Time_Series_HW_1"
+output: html_document
+date: "2024-08-25"
+---
+There is monthly seasonality present. Average daily usage increases in winter (November, December) and peaks in January. The usage then starts to decrease from winter to spring, with the lowest points being April and May. The usage starts to increase again (about half the peak of January) in the summer months (June, July) and then starts decreasing again in the Fall (August, September, October) before starting the cycle all over again with an increase in winter. TLDR- Winter -high usage, Spring- low usage, Summer-medium-high usage, Fall- low usage. 
+
+As far as the trend goes, there is a slight decline from the start of the training set (August 2018) to mid-2020. The trend then starts to increase from mid-2020 until January-2021, and then has more of a very slow increase from January-2021 to the end of the training set (July-2022). This increase is still lower than August-2018 (the start of the training set).
+
+The component that explains the most variability is the monthly seasonal component.
+The Fs is 0.9141054, which is close to 1 indicating 'high strength.'
+The Ft is 0.3680337 which is lower than the strength of the Fs. It is not very close to 1 so its weak in
+strength.
+
+median value 106821
+```{r setup, include=FALSE}
+library(tidyverse)
+
+#read in energy ds
+energy_hw<-read_csv("https://raw.githubusercontent.com/sjsimmo2/TimeSeries/master/energy_F2024.csv")
+
+
+#convert datetime_beginning_ept from string to date and the summarize mw by day
+energy_daily<-energy_hw %>% 
+  mutate(date=(date(mdy_hm(datetime_beginning_ept))))%>%
+  group_by(date) %>%
+  summarize(daily_mw=sum(mw))
+
+
+#get the average daily usage BY MONTH
+energy_monthly<-energy_daily %>% 
+  mutate(date_month=(mdy(paste(month(date),'-1-',year(date)))))%>%
+  group_by(date_month) %>%
+  summarize(total_average_daily_mw=mean(daily_mw))
+
+#Training should be from August 2018 - July 2022, validation should be from August 2022 - July 2023 and test should be from August 2023 - July 2024.  We will be using the training data set for the rest of this assignment.
+energy_train<-energy_monthly %>%
+  filter(date_month<='2022-07-01')
+summary(energy_train)
+
+energy_validate<-energy_monthly %>%
+  filter((date_month>'2022-07-01') & (date_month<'2023-08-01'))
+
+energy_test<-energy_monthly %>%
+  filter(date_month>='2023-08-01')
+
+#get median value of total average daily mw of training set
+summary(energy_train$total_average_daily_mw)
+
+#make energy train into a tsibble, have to make sure the month is in the form tsibble wants
+energy_month_ts_train <- energy_train %>%
+  mutate(Month=yearmonth(date_month)) %>%
+  as_tsibble(index = Month)
+  energy_month_ts_train
+  
+energy_time_plot<-energy_month_ts_train %>% autoplot(colour='blue')+
+ labs(y ="Total Avg Daily MW", x='Month',title = "Total Average Daily MW By Month" )
+
+ggsave(energy_time_plot, 
+       filename = "energy_time_plot.jpg",
+       device = "jpg",
+       height = 7, width = 9, units = "in")
+getwd()
+#STL decomp, and plot it
+energy_decomp <- energy_month_ts_train %>% model(stl = STL(total_average_daily_mw))
+components(energy_decomp) %>% 
+  autoplot() + 
+  theme_classic()+
+  labs(y ="Total Avg Daily MW", x='Month',title = "Total Average Daily MW By Month" )
+
+#overlay trend on dataset in a graph
+trend_overlay<-components(energy_decomp) |> as_tsibble() |>
+autoplot(total_average_daily_mw, colour="gray") +
+geom_line(aes(y=trend), colour = "#D55E00") + 
+labs( y ="Total Avg Daily MW", x='Month',title = "Total Avg Daily MW Per Month With Trend Overlaid" )
+
+ggsave(trend_overlay, 
+       filename = "trend_overlay.jpg",
+       device = "jpg",
+       height = 7, width = 9, units = "in")
+
+
+#overlay seasonal on dataset in a graph
+components(energy_decomp) |> as_tsibble() |>
+autoplot(season_year, colour="black") +
+labs( y ="Total Avg Daily MW", title = "Total Avg Daily MW Season year" )+
+scale_x_yearmonth(date_breaks = "4 month", date_labels = "%m-%Y")+
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#strength of trend/seasonality
+energy_month_ts_train %>% features(total_average_daily_mw,feat_stl)
+
+```
+
