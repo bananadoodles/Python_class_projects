@@ -1,0 +1,261 @@
+---
+title: "LR_HW_1"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-08-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#read in libraries
+library(tidyverse)
+library(vcdExtra)
+library(DescTools)
+library(mgcv)
+```
+
+```{r,include=FALSE}
+#Explore the predictor variables individually with the target variable of whether the customer 
+#bought the insurance product. 
+
+#set_variable_type<-function(x){
+#  return(list(c(unique_num=length(unique(x))),min=(min(x,na.rm=TRUE)),max=max(x,na.rm=TRUE)))
+#  }
+
+#ins_var<-apply(X=insurance_t,
+#               FUN=set_variable_type,
+#               MARGIN=2)
+#var_df <- data.frame(matrix(unlist(ins_var), nrow=length(ins_var), byrow=TRUE))
+#var_df<-var_df %>%
+#  rename('unique_num'='X1','min'='X2','max'='X3') %>%
+#  mutate(variable=names(ins_var),max=as.numeric(max),min=as.numeric(min)) %>%
+#  mutate(range=max-min)%>%
+#  mutate(type=case_when(is.na(range)~'character',
+#                        unique_num==2 ~'binary',
+#                        .default='continuous')) %>%
+#  select(variable, unique_num, min,max,range,type)
+
+```
+
+### Associations
+#### Explore the predictor variables individually with the target variable of whether the customer bought the insurance product. 
+#### Summarize only the significant variables in a table ranking from most significant to least significant – the Bank currently uses 𝛼 = 0.002, but is open to another if you defend your reason. 
+####  This table should separate out the four possible classes of variables – binary, ordinal, nominal, continuous.(HINT: Explore the predictor variables individually for now since you have not yet accounted for missing values.)(HINT: The downside to software sometimes is displaying a full p-value for ranking. That doesn’t mean you cannot get them through the right commands.As long as you have the same degrees of freedom you can rank on test statistic as well.) 
+####  In an appendix, include a table with all of the variables ranked by significance.
+```{r read data}
+#read in data
+insurance_t<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\Homework1_LR\\insurance_t.csv")
+
+#make variables that could be continuous but less than 10 unique values possible to take larger values and make categorical variables into factors
+insurance_t<-insurance_t %>%
+  mutate(CCPURC=case_when(CCPURC >=4 ~ 4,
+         .default= CCPURC),
+         CASHBK=case_when(CASHBK >=2 ~ 2,
+         .default=CASHBK),
+         NSF=case_when(NSF >=1 ~ 1,
+         .default=NSF),
+         MMCRED=case_when(MMCRED >=5 ~ 5,
+         .default= MMCRED)) %>%
+  mutate(across(c('BRANCH','MMCRED','CCPURC','RES','CASHBK','DDA',
+                  'DIRDEP','NSF','SAV','ATM','CD','IRA','INV','LOC',
+                  'ILS','MM','MTG','CC','SDB','MOVED',
+                  'INAREA','HMOWN','INS'),as.factor))
+
+#make different list of variables based on types (binary,ordinal,nominal,continuous)
+binary_vars<-c('DDA','DIRDEP','NSF','SAV','ATM','CD','IRA','INV','LOC', 'ILS','MM','MTG','CC','SDB','MOVED','INAREA','HMOWN')
+ordinal_vars<-c('CCPURC','CASHBK','MMCRED')
+nominal_vars<-c('BRANCH','RES')
+continuous_vars<-c('ACCTAGE','DDABAL','DEPAMT','CHECKS','NSFAMT','PHONE','TELLER','SAVBAL','ATMAMT','POS',
+'POSAMT','CDBAL','IRABAL','LOCBAL','INVBAL','ILSBAL','MMBAL','MTGBAL',
+'CCBAL','INCOME','LORES','AGE','HMVAL','CRSCORE','DEP')
+
+#identify target variables
+target_var<-c('INS')
+
+#create function to compare each of the variables to the target
+#for continuous use logistic reg, for binary and ordinal use Mantel-H test and for nominall use pearsons-chi squared.
+
+compare_cont<-function(data){
+  
+ #make an empty dataframe to dump the variable name, p value and datatype in.
+ df_total=setNames(data.frame(matrix(ncol = 3, nrow = 0)), c("var_name", "p", "cat"))
+ 
+ #loop through all the columns in the dataset and apply the test specified by variable type lists above
+ for (i in colnames(data)){
+ var_name<-i
+  if (i %in% continuous_vars){
+    #logistic regression tod get the p value and make a variable for the type
+    logit.model <- glm(paste0(target_var,'~', var_name),
+           data = data, family = binomial(link = "logit"))
+     p<-coef(summary(logit.model))[2,4]  
+     cat<-'continuous'
+     } 
+   else if(i %in% binary_vars){
+    #Mantel-henzels chi-squared test and get the p value and make a variable for the type
+     p<-CMHtest(table(data[[target_var]], data[[var_name]]))$table[2,3] 
+     cat<-'binary'
+     } 
+   else if(i %in% nominal_vars){
+    #do Pearson's chi-squared test and get the p value and make a variable for the type
+    p<-chisq.test(table(data[[target_var]], data[[var_name]]))$p.value
+    cat<-'nominal'
+    } 
+   else if(i %in% ordinal_vars){
+    #do Mantel-henzels chi-squared test and get the p value and make a variable for the type
+    p<-CMHtest(table(data[[target_var]], data[[var_name]]))$table[2,3]
+    cat<-'ordinal'
+    } else{
+    #set an else to make sure everything is captured, 
+    #this is just to see if a variable feel through the cracks
+    p=2
+    cat='terd'
+    }
+ #create another empty dataframe to store the variable name, p-value and variable type
+ df <- data.frame("var_name"=var_name,"p"=p,"cat"=cat)
+ df_total <- rbind(df_total,df) #add these variables to the total df each time it loops
+ }
+ return(df_total) #return the total df
+}
+ 
+#get all the ps for the different variables, call function made above
+all_the_ps<-compare_cont(insurance_t) %>%
+  filter(var_name!='INS') %>%
+  arrange(var_name) %>%
+  `rownames<-`(NULL)
+
+#get a dataframe with only the sig ps
+sigma=0.002
+sig_ps<-all_the_ps %>%
+  filter(p<=sigma) %>%
+  arrange(p)
+
+```
+
+### Odds Ratio
+#### Provide a table of odds ratios for only binary predictor variables in relation to the target variable. 
+#### Rank these odds ratios by magnitude. 
+#### Interpret only the highest magnitude odds ratio. 
+#### Report on any interesting findings.(HINT: This is open-ended and has no correct answer.
+```{r odds }
+#ODDS RATIO
+
+#get a df of only binary vars
+binary_ds<-insurance_t %>%
+  select(binary_vars)
+
+#make an empty dataframe to dump the variable name, p value and datatype in.
+odds_ratio_total=setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("var_name", "odds_ratio"))
+
+#loop through each of the binary df and get the odds ratio for each
+for (i in colnames(binary_ds)){
+  var_name<-i
+  #get the odds ratio for each of the binary vars with target var
+  odds_ratio<-OddsRatio(table(insurance_t$INS, insurance_t[[var_name]]))
+  
+  #create another empty dataframe to store the variable name, p-value and variable type
+  odd_rat <- data.frame("var_name"=var_name,"odds_ratio"=odds_ratio)
+  odds_ratio_total <- rbind(odds_ratio_total,odd_rat) #add these variables to the total df each time it loops
+}
+
+#arrange the oddsratio by magnitude of odds ratio and reset row numbers
+odds_ratios<-odds_ratio_total%>%
+  arrange(odds_ratio) %>%
+  `rownames<-`(NULL)
+
+```
+
+### Linear Assumptions
+#### Provide a summary of results around the linearity assumption of continuous variables. 
+#### List both which variables meet and do not meet the needed assumption for continuous variables.
+```{r assumptions}
+#CHECK LINEAR ASSUMPTIONS FOR CONTINOUS VARS
+
+#get a df of only continuous vars
+continuous_ds<-insurance_t %>%
+  select(continuous_vars)
+
+#make an empty dataframe to dump the variable name, p value and datatype in.
+ck_assump_total=setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("var_name", "p_for_gam"))
+
+#loop through each of the continuous df and get the p to check linear assumptions for each
+for (i in colnames(continuous_ds)){
+  var_name<-i
+  #1st set up a gam model (models splines)
+  fit.gam <- mgcv::gam(as.formula(paste0(target_var, ' ~ ', 's(',var_name,')')),
+             data = insurance_t, family = binomial(link = 'logit'), method = 'REML')
+  #2nd set a logistic regression to compare to
+  logit.model <- glm(as.formula(paste0(target_var, ' ~ ',var_name)),
+           data = insurance_t, family = binomial(link = "logit"))
+  
+  #compare the two models and get the p-value to test if the spline adds value (HA)
+  p_for_gam<-anova(logit.model, fit.gam, test = "LRT")[2,5]
+
+  #create another empty dataframe to store the variable name, p-value and variable type
+  ck_assump <- data.frame("var_name"=var_name,"p_for_gam"=p_for_gam)
+  ck_assump_total <- rbind(ck_assump_total,ck_assump) #add these variables to the total df each time it loops
+}
+
+#arrange assumption checks df by var name and reset row numbers, make flag if assumption is not met at 0.002 sig level
+assump_checks<-ck_assump_total%>%
+  arrange(var_name) %>%
+  `rownames<-`(NULL) %>%
+  mutate(assump_met=case_when(p_for_gam<0.002~0,
+                              .default = 1))
+
+```
+
+## Write things to csvs
+```{r csvs}
+#WRITE ALL DFS TO CSV
+
+#all p values 
+write.csv(all_the_ps,"C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\all_the_ps.csv",row.names=FALSE)
+
+#odds ratios
+write.csv(odds_ratios,"C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\odds_ratios.csv",row.names=FALSE)
+
+#linear assumptions
+write.csv(assump_checks,"C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\assump_checks.csv",row.names=FALSE)
+```
+
+
+### Provide a summary of important data considerations as follows: 
+#### Visual representation of which variables have the highest (defined by you for now) amount of missing values. 
+```{r explore}
+#library(DataExplorer)
+#create_report(insurance_t,y='INS')
+
+#count and plot the NAs
+insurance_t %>%
+          summarise_all(~ sum(is.na(.))) %>%
+          pivot_longer(everything(),names_to='variable',values_to='na_count') %>%
+          filter(na_count!=0) %>%
+          ggplot()+
+          geom_col(aes(x=reorder(variable,na_count),y=na_count),fill='cornflowerblue')+
+          coord_flip()+
+          labs(x='Variable Name',y='NA COUNT',title='NA Count By Variable')+
+          geom_text(aes(y = na_count, x = variable,label=na_count), hjust = 0)+
+          ylim(0,2000)
+
+na_count<-insurance_t %>%
+          summarise_all(~ sum(is.na(.))) %>%
+          pivot_longer(everything(),names_to='variable',values_to='na_count') %>%
+          filter(na_count!=0) %>%
+          ggplot()+
+          geom_col(aes(x=reorder(variable,na_count),y=na_count),fill='cornflowerblue')+
+          coord_flip()+
+          labs(x='Variable Name',y='NA COUNT',title='NA Count By Variable')+
+          geom_text(aes(y = na_count, x = variable,label=na_count), hjust = 0)+
+          ylim(0,2000)
+
+#save plot as jpg
+ggsave(na_count, 
+       filename = "na_count.jpg",
+       device = "jpg",
+       height = 7, width = 9, units = "in")
+
+
+
+```
+

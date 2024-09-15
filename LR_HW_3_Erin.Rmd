@@ -1,0 +1,217 @@
+---
+title: "LR_HW3"
+output: html_document
+date: "2024-09-12"
+---
+## IMPORT AND DATA CLEAN-UP
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#read in libraries
+library(tidyverse)
+library(car)
+library(ROCit)
+
+#read in training data
+insurance_t_binned<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\HW3\\insurance_t_bin.csv")
+
+#read in validation data
+insurance_v_binned<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\HW3\\insurance_v_bin.csv")
+
+#make all columns characters so all NAs can be put as Missing
+insurance_t_binned<-insurance_t_binned %>%
+  mutate(across(everything(), as.character))
+
+insurance_v_binned<-insurance_v_binned %>%
+  mutate(across(everything(), as.character))
+
+#make all nas "missing' 
+insurance_t_binned[is.na(insurance_t_binned)] = '00 Miss' 
+insurance_v_binned[is.na(insurance_v_binned)] = '00 Miss' 
+
+
+#check to make sure there are no more NAS, looks good for both
+insurance_t_binned %>%
+          summarise_all(~ sum(is.na(.))) %>%
+          pivot_longer(everything(),names_to='variable',values_to='na_count') 
+
+insurance_v_binned %>%
+          summarise_all(~ sum(is.na(.))) %>%
+          pivot_longer(everything(),names_to='variable',values_to='na_count') 
+  
+#make all columns in factors
+insurance_t_binned<-insurance_t_binned %>%
+  mutate(across(everything(), as.factor))
+
+insurance_v_binned<-insurance_v_binned %>%
+  mutate(across(everything(), as.factor))
+  
+#roll CASHBK level 2 up to 1
+#AND MMCRED level 5 to 3
+insurance_t_binned_to_model<-insurance_t_binned %>%
+  mutate(CASHBK=as.factor(case_when(as.integer(as.character(CASHBK))>=1 ~'1',.default=CASHBK)),
+         MMCRED=as.factor(case_when(as.integer(as.character(MMCRED))>=3 ~'3',.default=MMCRED)))
+insurance_v_binned_to_model<-insurance_v_binned %>%
+  mutate(CASHBK=as.factor(case_when(as.integer(as.character(CASHBK))>=1 ~'1',.default=CASHBK)),
+         MMCRED=as.factor(case_when(as.integer(as.character(MMCRED))>=3 ~'3',.default=MMCRED)))
+#check structure
+#str(insurance_t_binned_to_model)
+#str(insurance_v_binned_to_model)
+
+```
+
+
+
+## Report the variables used in your final logistic regression model to predict the purchase of the
+## new insurance product.
+## (HINT: Feel free to use the final model you had from the previous report or build a
+## whole new model if you are not satisfied with your previous one. If building a new
+## model, detail the process you took for variable selection.)
+## Rank each of the variables by p-value (one p-value per variable).
+```{r}
+#using model found from last HW to save time
+final_model<-glm(formula = INS ~ SAVBAL_BIN + DDABAL_BIN + CDBAL_BIN + MMBAL_BIN + 
+    INV + CHECKS_BIN + ATMAMT_BIN + TELLER_BIN + IRA + DDA + 
+    CC + ILSBAL_BIN + MTG + NSF + IRA:DDA, family = binomial(link = "logit"), 
+    data = insurance_t_binned_to_model)
+
+#get a df with the p values for each of the variables in the model
+p_values_df_final<-as.data.frame(car::Anova(final_model, test = "LR", type = "III", singular.ok = TRUE))
+p_values_df_final <- tibble::rownames_to_column(p_values_df_final, "Variable") 
+
+```
+
+
+
+## MODEL ASSESMENT ON TRAINING- GOODNESS OF FIT METRICS 
+#### Report and interpret the following probability metrics for your model on training data.
+#### Concordance percentage.
+#### Discrimination slope – provide the coefficient of discrimination as well as a visual
+#### representation through histograms.
+```{r}
+#corcodance on training set
+library(Hmisc)
+insurance_t_binned_to_model<-insurance_t_binned_to_model %>%
+  mutate(INS=as.integer(as.character(INS)))
+
+#created predicted probablities values and put on training ds
+insurance_t_binned_to_model$p_hat <- predict(final_model, type = "response")
+
+# concordance is 0.7997675, not the absolute best can go back and try to get better
+somers2(insurance_t_binned_to_model$p_hat, insurance_t_binned_to_model$INS)
+
+#discrimination slope
+
+#gets a vector of events and non events
+p1 <- insurance_t_binned_to_model$p_hat[insurance_t_binned_to_model$INS == 1]
+p0 <- insurance_t_binned_to_model$p_hat[insurance_t_binned_to_model$INS == 0]
+
+#gets the coeff of discrimination by getting the mean prob for events and non-events and then getting the diff
+#coeff_discrim=0.24589
+coef_discrim <- mean(p1) - mean(p0)
+
+#plots the coeff of discrimination
+#it looks like we are doing better are capturing the 0s as the spread of the 0s is not bad but the ones are really spread out and there is a decent amount of overlap
+coeff_graph<-ggplot(insurance_t_binned_to_model, aes(p_hat, fill = factor(INS)))+ 
+                    geom_density(alpha = 0.7)+ 
+                    scale_fill_grey()+ 
+                    labs(x = "Predicted Probability", fill = "Outcome",
+                         title = paste("Coefficient of Discrimination = ",
+                    round(coef_discrim, 3), sep = ""))
+
+ggsave(coeff_graph, 
+       filename = "coeff_graph.jpg",
+       device = "jpg",
+       height = 5, width = 12, units = "in")
+
+```
+
+
+## CLASSIFICATION AND CUTOFFS
+#### Report and interpret the following classification metrics for your model on training data.
+####  Visually show the ROC curve.
+####  (HINT: Although this is one of the only times I will allow a ROC curve in a report,
+#### make sure the axes are labeled well and the plot looks professional.)
+#### K-S Statistic. The Bank currently uses the K-S statistic to choose the threshold for
+#### classification but are open to other methods as long as they are documented in the
+#### report and defended.
+```{r}
+#table of classification measurements in table form
+#classif_meas <- measureit(train$p_hat, train$Bonus, measure = c("ACC", "SENS","SPEC"))
+#print(logit_meas)
+
+#ROC curve, looking at all the possible cutoffs
+#YOUDON INDEX
+#value       FPR       TPR    cutoff 
+#0.4713147 0.3220369 0.7933516 0.2970672 
+#NEED TO GET A PRETTIER PLOT 
+logit_roc <-rocit(insurance_t_binned_to_model$p_hat,insurance_t_binned_to_model$INS)
+plot(logit_roc)$optimal
+summary(logit_roc)
+
+#K-S STATISTIC POPULAR IN BANKING
+#cutoff 0.2970672 same as Youdons
+ksplot(logit_roc)
+ksplot(logit_roc)$"KS Stat"
+ksplot(logit_roc)$"KS Cutoff"
+
+#0.2970672	0.6586997	 Precision and Recall Cutoff is same as Youdons, interesting usually it is not
+logit_meas<- measureit(insurance_t_binned_to_model$p_hat, 
+                         insurance_t_binned_to_model$INS, 
+                         measure = c("PREC", "REC","FSCR"))
+fscore_table<- data.frame(Cutoff = logit_meas$Cutoff, FScore = logit_meas$FSCR)
+head(arrange(fscore_table, desc(FScore)), n = 1)
+
+```
+
+#### Report and interpret the following classification metrics for your model on validation data.
+#### Display your final confusion matrix.
+####  Accuracy.
+####  Lift – add a visual to help show the model performance.
+```{r}
+#predict probabilities on validation set
+insurance_v_binned_to_model$p_hat<-predict(final_model,insurance_v_binned_to_model,type='response')
+
+#use cutoff of 0.2970672 for event
+insurance_v_binned_to_model <- insurance_v_binned_to_model %>%
+ mutate(INS_hat = ifelse(p_hat > 0.2970672, 1, 0))
+
+#table with preds and actuals for validation set
+table(Predicted=insurance_v_binned_to_model$INS_hat,Actual= insurance_v_binned_to_model$INS)
+
+#          Actual
+#Predicted   0   1
+#        0 909 160
+#        1 473 582
+
+
+
+#logit_roc_v <-rocit(insurance_t_binned_to_model$p_hat,insurance_t_binned_to_model$INS)
+
+logit_meas_V <- measureit(insurance_v_binned_to_model$p_hat, insurance_v_binned_to_model$INS,
+                          measure = c("PREC", "REC","ACC","SENS","MIS","SPEC","TPR","TNR","FSCR"))
+
+acc_measures_df<- data.frame(Cutoff = logit_meas_V$Cutoff,FScore=logit_meas_V$FSCR,
+                             ACC=logit_meas_V$ACC, MIS=logit_meas_V$MIS,
+                             SENS=logit_meas_V$SENS, SPEC=logit_meas_V$SPEC,
+                             TPR=logit_meas_V$TPR,TNR=logit_meas_V$TNR, 
+                             PREC=logit_meas_V$PREC, REC=logit_meas_V$REC)
+
+
+#filter for the measures that are at the optimal cutoff using Max Fscore (0.2938753) very similar to Youdons
+#ACC 70.43%
+#Misclassification 29.5%
+# TPR is 793
+# TNR 0.656
+acc_measures_df_at_optimal<-head(arrange(acc_measures_df, desc(FScore)), n = 1)
+
+#plot(logit_roc)$optimal
+#summary(logit_roc)
+#LIFT on validation set
+logit_roc_v <-rocit(insurance_v_binned_to_model$p_hat,insurance_v_binned_to_model$INS)
+
+#10% -1.998 20%-1.74 30%-1.647 I THINK WE COULD TRY FOR A BETTER MODEL
+logit_lift <- gainstable(logit_roc_v)
+print(logit_lift)
+plot(logit_lift, type = 1)
+
+```

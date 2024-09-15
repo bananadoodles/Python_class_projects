@@ -1,0 +1,266 @@
+---
+title: "AA502_LR_HW_2"
+output: html_document
+date: "2024-08-30"
+---
+
+### FIX MISSING VALUES
+#### For any variable with missing values, change the data to include a missing category 
+#### instead of a missing value for the categorical variable.  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#read in libraries
+library(tidyverse)
+library(car)
+
+#read in training data
+insurance_t_binned<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\HW2\\insurance_t_bin.csv")
+
+#read in validation data
+insurance_v_binned<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\HW2\\insurance_v_bin.csv")
+
+#make all columns characters so all NAs can be put as Missing
+insurance_t_binned<-insurance_t_binned %>%
+  mutate(across(everything(), as.character))
+
+#make all nas "missing' 
+#insurance_t_binned[is.na(insurance_t_binned)] = '00 Miss' 
+
+#check to make sure there are no more NAS, looks good
+insurance_t_binned %>%
+          summarise_all(~ sum(is.na(.))) %>%
+          pivot_longer(everything(),names_to='variable',values_to='na_count') 
+  
+#make all columns in factors
+insurance_t_binned<-insurance_t_binned %>%
+  mutate(across(everything(), as.factor))
+  
+str(insurance_t_binned_to_model)
+```
+
+### SEPARATION CONCERNS
+#### Check each variable for separation concerns. Document in the report and adjust any 
+#### variables with complete or quasi-separation concerns. 
+```{r, separation concerns}
+#identify target variable
+target_var<-c('INS')
+
+#df without target variable
+ins_wo_target<-insurance_t_binned %>%
+  select(-c('INS'))
+
+#mop<-as.data.frame(table(INS=insurance_t_binned$INS,insurance_t_binned$CCPURC))
+
+#create empty dataframe to store freq counts of each variable level to the target
+target_freq_df=setNames(data.frame(matrix(ncol = 4, nrow = 0)), c("var_name","INS","level","Freq"))
+
+#loop through each of the variables store freq of each level of predictor variables to each target variable
+for (i in colnames(ins_wo_target)){
+    var_name<-i
+    var_df<-as.data.frame((table(INS=insurance_t_binned$INS,ins_wo_target[[var_name]])))
+    names(var_df)[names(var_df) == 'Var2'] <- 'level'
+    var_df$var_name=var_name
+    target_freq_df<-rbind(target_freq_df,var_df)
+}
+
+#identify any 0s in the target variable frequency
+#CASHBK and MMCRED are quasi-complete need to fix this
+target_freq_df_zeros<-target_freq_df %>%
+  filter(Freq==0)
+
+
+#fix CASHBK
+#look at all levels, since making a 1 would make it 50/50 anyways going to roll level 2 up to 1
+table(INS=insurance_t_binned$INS,CASHBK=insurance_t_binned$CASHBK)
+
+#there is no 2 in validation set, can't move one over
+table(INS=insurance_v_binned$INS,MMCRED=insurance_v_binned$MMCRED)
+
+
+#fix MMCRED
+#look at #look at all levels, since making a 1 would make it 50/50 anyways going to roll 5 credits to 3 credits
+#table(INS=insurance_t_binned$INS,MMCRED=insurance_t_binned$MMCRED)
+
+#there is no level 5 in the validation dataset, can't move one over
+#table(INS=insurance_v_binned$INS,MMCRED=insurance_v_binned$MMCRED)
+
+#roll CASHBK level 3 up to 2 
+#AND MMCRED level 5 to 3
+
+
+insurance_t_binned_to_model<-insurance_t_binned %>%
+  mutate(CASHBK=as.factor(case_when(as.integer(as.character(CASHBK))>=1 ~'1',.default=CASHBK)),
+         MMCRED=as.factor(case_when(as.integer(as.character(MMCRED))>=3 ~'3',.default=MMCRED)))
+
+#check to make sure everything is fixed, looks good.
+table(INS=insurance_t_binned_to_model$INS,CASHBK=insurance_t_binned_to_model$CASHBK)
+table(INS=insurance_t_binned_to_model$INS,MMCRED=insurance_t_binned_to_model$MMCRED)
+
+
+
+#this is causing problems (I think) 
+
+#REPORT B14,B15,B18,B19 seem to be missing CC, INV,CCPURC, INVAMOUNT 
+table(BRANCH=insurance_t_binned$BRANCH,CC=insurance_t_binned$CC)
+table(BRANCH=insurance_t_binned$BRANCH,INV=insurance_t_binned$INV)
+table(CCPURC=insurance_t_binned$CCPURC,CC=insurance_t_binned$CC)
+
+
+
+#look at the target with each of the BRANCHES INV,CC,CCPURC
+#table(BRANCH=insurance_t_binned_to_model$BRANCH,INS=insurance_t_binned_to_model$INS)
+testy<-insurance_t_binned %>% 
+  filter((as.character(BRANCH)=='B15')| 
+        (as.character(BRANCH)=='B14')|
+        (as.character(BRANCH)=='B18')|
+        (as.character(BRANCH)=='B19')) %>%
+  summarise_all(~ sum(is.na(.)))
+
+
+```
+
+### GET RID OF MULTICOLLINEARITY DO NOT NEED THIS SECTION ANYMORE
+```{r, include=FALSE}
+#get rid of redundant variables that are causing problems
+#insurance_t_binned_to_model<-insurance_t_binned_to_model%>%
+#  select(-c("CC","INV"))
+
+#alias(glm(INS ~ ., data = insurance_t_binned_to_model, family = binomial(link = "logit")))
+
+#use VIF
+#vif(full.model_after_alias)
+```
+### MAIN EFFECTS MODEL
+#### Build a main effects only binary logistic regression model to predict the purchase of the 
+#### insurance product. 
+#### Use backward selection to do the variable selection – the Bank currently uses 𝛼 = 0.002 
+#### and p-values to perform backward, but is open to another technique and/or significance 
+#### level if documented in your report. 
+#### Report the final variables from this model ranked by p-value. 
+```{r, main effects model}
+#MAIN EFFECTS MODEL AKA NO INTERACTIONS
+
+#set up full and empty models to do stepwise
+full.model_ins <- glm(INS ~ ., data = insurance_t_binned_to_model, family = binomial(link = "logit")) 
+empty.model_ins <- glm(INS ~ 1, data = insurance_t_binned_to_model, family = binomial(link = "logit")) 
+
+#BACKWARDS SELECTION WITH AIC, 8766.62
+#INS ~ DDA + DIRDEP + NSF + IRA + LOC + INV + MTG + CC + MOVED + 
+#    BRANCH + DDABAL_BIN + DEP_BIN + CHECKS_BIN + NSFAMT_BIN + 
+#    TELLER_BIN + SAVBAL_BIN + ATMAMT_BIN + CDBAL_BIN + INVBAL_BIN + 
+#    ILSBAL_BIN + MMBAL_BIN
+#back.model_ins <- step(full.model_ins, direction = "backward",trace=FALSE)
+#summary(back.model_ins)
+
+
+#BACKWARDS WITH P, AIC is 8797, the backwards AIC model has a better AIC
+#INS ~ DDA + NSF + IRA + INV + MTG + CC + DDABAL_BIN + 
+#    CHECKS_BIN + TELLER_BIN + SAVBAL_BIN + ATMAMT_BIN + CDBAL_BIN + 
+#    ILSBAL_BIN + MMBAL_BIN, family = binomial(link = "logit"), 
+#    data = insurance_t_binned_to_model)
+back.model_ins_p<- step(full.model_ins,direction = "backward", 
+                        k = qchisq(0.002, 1, lower.tail = FALSE),trace=FALSE) 
+
+summary(back.model_ins_p)
+```
+
+### INTERPRET COEFF AKA ODDS RATIO
+#### Interpret one variable’s odds ratio from your final model as an example. 
+#### Report on any interesting findings from your odds ratios from your model.
+```{r,coeff interpretation}
+
+#df with coeffs from p backwards model
+coeff_first<-as.data.frame(back.model_ins_p$coefficients)
+coeff_first <- tibble::rownames_to_column(coeff_first, "Variable")
+
+#get exp of each of the coeff for odds ratio
+coeff_first<-coeff_first %>%
+  rename('coeff'='back.model_ins_p$coefficients') %>%
+  mutate(odds_rat=exp(coeff))
+
+#interesting things to report for odds ratios
+#having a checking account DDA reduces the odds by 78% than compared to not having a checking account
+# DDABAL_BIN08 > 6126.24-checking account balances above 6126.24 are 7.9360009 times more likely to buy the ins # than the reference level of checking balance (which is <=0.01)
+# DDABAL_BIN07 balances >2188 and <=6126.24 are 4.2684943 times more likely to buy the ins # than the reference level of checking balance (which is <=0.01)
+#DDABAL_BIN06 <= 2188.02 3.2073913
+#DDABAL_BIN05 <= 1248.47 2.5779655
+#DDABAL_BIN04 <= 764.81 1.9921357
+#DDABAL_BIN03 <= 304.95 1.4378133
+#DDABAL_BIN02 <= 82.57 1.0199862 <-doesnt really change either way good or bad
+#ALL OF THE DDABAL ARE ABOVE ! THOUGH
+
+#SAVBAL_BIN07 > 8334.97 savings balance 5.9740648 times more likely to buy the ins compared to reference level, #which is (01 <= 0.01)
+#SAVBAL_BIN07 savings account (>2962.02 and <=8334.97) 3.7130475 time more likely to buy the ins compared to reference level, #which is (01 <= 0.01)
+#SAVBAL_BIN06 <= 8334.97 3.7130475
+#SAVBAL_BIN05 <= 2962.02 2.4305497
+# SAVBAL_BIN04 <= 1259.45 1.3528059
+#IN THESE TWO CASES OF SAVINGS BALANCES THERE ARE HIGHER ODDS FOR THE REFERENCE LEVEL WHICH IS <=0.01
+# SAVBAL_BIN03 <= 265.87 0.7758947<- interesting it starts to have a REDUCTION IN ODDS
+# SAVBAL_BIN02 <= 61.25 0.5697336<- interesting it starts to have a REDUCTION IN ODDS
+
+#CHECKS_BIN04 > 4 0.5411992 <-reduces the odds compared to reference (01 <= 0) writing no checks
+#CHECKS_BIN03 <= 4 0.9564008 (3,4)
+#CHECKS_BIN02 <= 2 1.0488481 (1,2 checks)
+
+
+#having an investment account is 1.83 times more likely to buy than not having an investment account
+
+
+
+```
+
+### LOOK FOR INTERACTIONS
+#### Investigate possible interactions using forward selection including only the main effects from 
+#### your previous final model. 
+#### Report the final interaction variables from this model ranked by p-value.
+```{r, look for interactions}
+#create the full and empty model to put into forward stepwise
+
+#lm(a ~ .^2)
+#back.model_ins_p
+#PUT IN ALL INTERACTIONS from the variables that came out of backwars selection above
+full.model_int <- glm(INS ~ (DDA + NSF + IRA + INV + MTG + CC + DDABAL_BIN + 
+    CHECKS_BIN + TELLER_BIN + SAVBAL_BIN + ATMAMT_BIN + CDBAL_BIN + 
+    ILSBAL_BIN + MMBAL_BIN)^2, data = insurance_t_binned_to_model, family = binomial(link = "logit")) 
+empty.model <- glm(INS ~ 1, data = insurance_t_binned_to_model, family = binomial(link = "logit")) 
+
+#do a forward selection on all interactions within p model that we got from previous backwards selection
+#using p as selection at 0.002 alpha level
+for.model_int <- step(empty.model,
+                  scope = list(lower = formula(empty.model),
+                  upper = formula(full.model_int)),
+                  direction = "forward",
+                  k = qchisq(0.002, 1, lower.tail = FALSE),trace=FALSE) 
+
+summary(for.model_int)
+
+#interaction between IRA and DDA
+final_model<-glm(formula = INS ~ SAVBAL_BIN + DDABAL_BIN + CDBAL_BIN + MMBAL_BIN + 
+    INV + CHECKS_BIN + ATMAMT_BIN + TELLER_BIN + IRA + DDA + 
+    CC + ILSBAL_BIN + MTG + NSF + IRA:DDA, family = binomial(link = "logit"), 
+    data = insurance_t_binned_to_model)
+#IRA:DDA p value is 3.129127e-04
+
+#check for quasi seperation with the IRA,DDA interaction, looks ok, the coeff looked ok as well
+insurance_t_binned_to_model %>%
+  count(DDA,IRA,INS) 
+```
+
+### FINAL LOGISTIC MODEL
+#### Report your final logistic regression model’s variables by significance. 
+```{r,final log model}
+p_values_df_final<-as.data.frame(anova(for.model_int))
+
+#library(car)
+#car::Anova(final_model, test = "LR", type = "III")
+
+p_values_df_final <- tibble::rownames_to_column(p_values_df_final, "Variable") %>%
+  filter(Variable!='NULL')
+
+
+#write p values to csv
+write.csv(p_values_df_final,"C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_I\\Homework\\LogisticRegHW\\ps_hw_2_final.csv",row.names=FALSE)
+
+
+```
