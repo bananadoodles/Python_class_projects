@@ -1,0 +1,403 @@
+---
+title: "AA502_TS2_HW2"
+output: html_document
+date: "2024-10-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#bring in libraries
+#read in libraries
+library(tidyverse)
+library(fpp3)
+library(imputeTS)
+library(tis)
+
+
+#read in data
+energy_orig<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered.csv")
+energy_orig_test_1<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test1.csv")
+energy_orig_test_2<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test2.csv")
+energy_orig_test_3<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test3.csv")
+energy_orig_v<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test4.csv")
+
+
+
+#combine test 1 and test 2 in to the original dataset to use in training
+energy_orig<-energy_orig %>% bind_rows(energy_orig_test_1,energy_orig_test_2,energy_orig_test_3)
+
+#get data into hourly format.
+#data is already split into training and validation via csv
+energy_hourly<-energy_orig %>%
+  mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
+                      format = "%m/%d/%y %H:%M",
+                      tz = "America/New_York"))) %>%
+  select(date_hourly,mw)
+
+#we are using 3rd test set as validation
+energy_hourly_valid<-energy_orig_v %>%
+  mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
+                      format = "%m/%d/%y %H:%M",
+                      tz = "America/New_York"))) %>%
+ select(date_hourly,mw)
+
+
+
+#get duplicate values to put back in for Nov
+duplicates <- duplicates(energy_hourly,index='date_hourly')
+duplicates <- duplicates %>% slice(c(2, 4, 6, 8, 10, 12))
+
+
+#take the duplicates out to be able to put the ts in a tsibble, will put them back in
+energy_hourly <- energy_hourly %>%
+  anti_join(duplicates, by = c("date_hourly", "mw")) 
+
+#make a tsibble with hourly frequency
+energy_hour.ts<-energy_hourly %>%
+as_tsibble(index=date_hourly)
+
+#make a tsibble with hourly frequency
+energy_hourly_valid<-energy_hourly_valid %>%
+as_tsibble(index=date_hourly)
+
+
+# Check for gaps in the tsibble
+#has_gaps(energy_hour.ts)
+#count_gaps(training_tsibble)
+#scan_gaps(training_tsibble)
+
+#fill the dupes back in there for daylight savings time to their original values, add a date variable to just get the data without timestamp
+energy_hour.ts <- energy_hour.ts %>%
+  fill_gaps(mw = c(duplicates[['mw']])) %>%
+  mutate(date=date(date_hourly))
+
+ 
+#plot the data
+#OUTLIER- June 8th,2019 at 2:00 am (possible power outage?) need to include as intervention point
+##autoplot(energy_hour.ts,mw) + labs(title= "Hourly Energy Usage",
+#                                  subtitle = "Energy in Megawatts", y= "Energy", x = "Date")+
+#                                  theme_classic() 
+
+#autoplot(energy_hour.ts,mw) + labs(title= "Hourly Energy Usage",
+#                                  subtitle = "Energy in Megawatts", y= "Energy", x = "Date")+
+#                                  theme_classic() 
+
+#no gaps-CHECKED
+#has_gaps(energy_hour.ts)
+
+#check for gaps in validation, the timing of it should not have any
+#looks good no gaps either
+#has_gaps(energy_hourly_valid)
+
+
+```
+
+## VISUAL SEASONALITY
+```{r}
+
+#make some variables to graph and see seasonality that may be going on
+#make intervention variable for power decrease outlier June 8th,2019 at 2:00:00 am
+
+energy_hour_train<-energy_hour.ts %>%
+  mutate(month_dummy_col=factor(month(date_hourly),ordered=TRUE),
+         hour=factor(hour(date_hourly),ordered=TRUE),
+         weekend=factor(case_when(weekdays(date_hourly)=='Sunday'~1,
+                           weekdays(date_hourly)=='Saturday'~1,
+                           .default=0)),
+         weekly_dummy_col=factor(weekdays(date_hourly),ordered=TRUE),
+         seas=factor(case_when((month_dummy_col>='3') & (month_dummy_col<='5') ~'Spring',
+                               (month_dummy_col>='6') & (month_dummy_col<='8')~'Summer',
+                               (month_dummy_col>='9') & (month_dummy_col<='11')~'Fall',
+                               .default='Winter')),
+         june_8_2019=case_when(date_hourly=='2019-06-08 02:00:00'~1,
+                                                      .default=0),
+         train=1)
+
+#make some variables to graph and see seasonality that may be going on
+#make intervention variable for power decrease outlier June 8th,2019 at 2:00:00 am
+energy_hourly_valid<-energy_hourly_valid %>%
+                     mutate(date=date(date_hourly),
+                      month_dummy_col=factor(month(date_hourly),ordered=TRUE),
+                     date=date(date_hourly),
+                     hour=factor(hour(date_hourly),ordered=TRUE),
+                     weekend=factor(case_when(weekdays(date_hourly)=='Sunday'~1,
+                     weekdays(date_hourly)=='Saturday'~1,
+                           .default=0)),
+                     weekly_dummy_col=factor(weekdays(date_hourly),ordered=TRUE),
+                     seas=factor(case_when((month_dummy_col>='3') & (month_dummy_col<='5') ~'Spring',
+                               (month_dummy_col>='6') & (month_dummy_col<='8')~'Summer',
+                               (month_dummy_col>='9') & (month_dummy_col<='11')~'Fall',
+                               .default='Winter')),
+                     june_8_2019=case_when(date_hourly=='2019-06-08 02:00:00'~1,
+                                                      .default=0),
+                     train=0)
+
+energy_all<-energy_hour_train %>% select(date_hourly,mw,train) %>% bind_rows(energy_hourly_valid %>% select (date_hourly,mw,train)) 
+
+#look at oct versus sept
+energy_all %>% filter(date(date_hourly)>='2024-09-01') %>% 
+  ggplot(aes(date_hourly,mw))+geom_line()
+
+
+energy_all<-energy_all %>% mutate(oda=lag(mw, 24))
+
+#look distributions by month
+#YOU CAN SEE June 8th,2019 at 2:00 am OUTLIER
+energy_hour_train %>%
+  ggplot(aes(month_dummy_col,mw,fill=month_dummy_col))+
+  geom_boxplot(notch=TRUE)
+
+energy_hour_train %>%
+  filter(((date_hourly>='2019-06-08 00:00:00')&(date_hourly<='2019-06-08 04:00:00'))) %>%
+  ggplot(aes(date_hourly,mw))+
+  geom_line()
+#look at distributions by day of week
+#Saturday and Sunday are lower
+energy_hour_train %>%
+  ggplot(aes(weekly_dummy_col,mw,fill=weekly_dummy_col))+
+  geom_boxplot(notch=TRUE)
+
+#look at distributions by hour
+#highest is at hour 5 and 6 pm
+energy_hour_train %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#look at the hours on the weekends versus the week
+energy_hour_train %>% filter (weekend==1) %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#look at the hours on the weekends versus the week
+energy_hour_train %>% filter (weekend==0) %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#boxplots to see how the hours act on the weekend versus non-weekend
+energy_hour_train %>% 
+  ggplot(aes(x = hour, y = mw))+
+  geom_boxplot(fill='blue')+
+  facet_wrap(~weekend)
+
+
+```
+
+```{r}
+#get the max date in the train dataset
+max_date<-max(energy_hour_train$date)
+
+#get date three years from max date (to keep the training set to three years)
+one_week_ct<-max_date - as.difftime(1, unit="weeks")
+three_ya<-max_date -years(3)
+one_year_ago<-max_date -years(1)
+two_year_ago_ago<-one_year_ago<-max_date -years(2)
+
+#get the first of the month, want three full seasons at least
+#three_ya<-ymd(paste(year(three_ya),month(three_ya),'-01-'))
+energy_hourly_3y<-energy_hour_train %>% filter(date_hourly>=three_ya)
+energy_hourly_1y<-energy_hour_train %>% filter(date_hourly>=one_year_ago)
+energy_hourly_2y<-energy_hour_train %>% filter(date_hourly>=two_year_ago_ago)
+
+
+```
+
+
+## LOOK AT HOLIDAYS
+```{r}
+
+
+
+holiday_list<-(holidays(2020:2025, goodFriday = F, board = T, businessOnly = T))
+us_holiday_list <- data.frame(
+  holiday = names(holiday_list),  # The names become the 'Fruit' column
+  ds = as.numeric(holiday_list)  # The numeric values become the 'Count' column
+)
+
+us_holiday_list<-us_holiday_list %>% 
+  mutate(ds=lubridate::ymd(as.character(ds))) %>% 
+  as_tsibble(index=ds,key=holiday)
+
+
+
+```
+## PROPHET MODEL
+```{r}
+library(fable.prophet)
+#min_date_tr<-min(energy_hourly_3y$date_hourly)
+#max_date_tr<-max(energy_hourly_3y$date_hourly)
+#us_holiday_list_tr<-us_holiday_list %>%
+#  filter(ds>=min_date_tr & ds<=max_date_tr)
+#doing a prophet with daily seasonality k=11, with intervention variable
+model_prophet <- energy_hour_train %>%
+ model(prophet(mw ~ june_8_2019 +
+ growth("linear") + 
+ season(period = 24, order = 11,type='additive') +
+ #season(period = "week", order = 5,type='additive') +
+ season(period = "year", order = 3,type='additive')))
+
+model_prophet %>%
+ components() %>%
+ autoplot()
+
+
+
+#forecast
+#MAPE:7.854773	yikes   MAE:272.1251 for test 3
+#MAPE:7.349526	        MAE:274.2825 for test 4
+model_prophet_for <- forecast(model_prophet, energy_hourly_valid)
+fabletools::accuracy(model_prophet_for, energy_hourly_valid)
+```
+
+```{r}
+#neural networks require stationarity
+#using stochastic- we had look at this in ARIMA and found this to be best
+#look at lags for difference data to put in, focus on p terms
+#p=2 and P=2
+library(forecast)
+
+energy_hour_train %>%
+ gg_tsdisplay(difference(mw, 24), plot_type = 'partial', lag = 168)
+
+#Autocorrelation (I would choose any Qs, little or big)
+ggAcf(difference(energy_hour_train$mw, 24), lag = 72,main='ACF Seasonal Differencing')
+
+#Partial autocorrelation I would try P=1 and p=1
+ggPacf(difference(energy_hour_train$mw, 24),lag=72,main='PACF Seasonal Differencing')
+
+
+```
+
+# NEURAL NETWORK
+```{r}
+#run neural network, one auto and one with the lags we set
+
+#set the seed so we all get the same results each time
+set.seed(123)
+
+
+model_ener_nnet <-energy_hourly_1y %>%
+ mutate(diff_mw = difference(mw, 24)) %>%
+ model(
+ hand = NNETAR(diff_mw,p = 2, P = 3),
+ auto = NNETAR(diff_mw)
+ )
+
+model_ener_nnet %>%
+ select(auto) %>%
+ report()
+
+
+model_ener_nnet %>%
+ select(hand) %>%
+ report()
+
+
+```
+
+```{r}
+
+
+model_nn_auto_for <-model_ener_nnet %>%
+ select(auto) %>% forecast(energy_hourly_valid)
+
+model_nn_hand_for <-model_ener_nnet %>%
+ select(hand) %>% forecast(energy_hourly_valid)
+
+#model_nn_hand2_for <-model_ener_nnet %>%
+# select(hand_2) %>% forecast(energy_hourly_valid)
+
+
+N <- length(energy_hourly_1y$mw)
+nnet.hand <- rep(NA,168)
+# Reconstruct the forecasts for the 'hand' model
+for(i in 1:168){
+  if(i <= 24){
+    # For the first 24 forecasts, add back the observed values from 24 periods ago
+    nnet.hand[i] <- model_nn_hand_for$.mean[i] + energy_hourly_1y$mw[N - 24 + i]
+  } else {
+    # For forecasts beyond 24 periods, add back the previously forecasted values
+    nnet.hand[i] <- model_nn_hand_for$.mean[i] + nnet.hand[i - 24]
+  }
+}
+
+
+N_1 <- length(energy_hourly_1y$mw)
+nnet.auto <- rep(NA,168)
+# Reconstruct the forecasts for the 'hand' model
+for(i in 1:168){
+  if(i <= 24){
+    # For the first 24 forecasts, add back the observed values from 24 periods ago
+    nnet.auto[i] <- model_nn_auto_for$.mean[i] + energy_hourly_1y$mw[N_1 - 24 + i]
+  } else {
+    # For forecasts beyond 24 periods, add back the previously forecasted values
+    nnet.auto[i] <- model_nn_auto_for$.mean[i] + nnet.auto[i - 24]
+  }
+}
+
+
+N2 <- length(energy_hourly_1y$mw)
+nnet.hand_2 <- rep(NA,168)
+# Reconstruct the forecasts for the 'hand' model
+for(i in 1:168){
+  if(i <= 24){
+    # For the first 24 forecasts, add back the observed values from 24 periods ago
+    nnet.hand_2[i] <- model_nn_hand2_for$.mean[i] + energy_hourly_1y$mw[N2 - 24 + i]
+  } else {
+    # For forecasts beyond 24 periods, add back the previously forecasted values
+    nnet.hand_2[i] <- model_nn_hand2_for$.mean[i] + nnet.hand_2[i - 24]
+  }
+}
+
+```
+
+
+```{r}
+energy_valid_with_for<-energy_all %>% 
+  filter(train==0) %>% 
+  mutate(prop_for=c(model_prophet_for$.mean),
+         hand_nn_for=nnet.hand,
+         hand_2_nn=nnet.hand_2,
+         auto_nn_for=nnet.auto)
+
+#MAPE FOR hand NNS MAPE: 6.22
+hnn.error<-energy_valid_with_for$mw - energy_valid_with_for$hand_nn_for
+hnn.MAE <- mean(abs(hnn.error))
+hnn.MAPE <- mean(abs(hnn.error)/abs(energy_valid_with_for$mw))*100
+
+#MAPE FOR auto NNS  MAPE:7.47 yikes
+ann.error<-energy_valid_with_for$mw - energy_valid_with_for$auto_nn_for
+ann.MAE <- mean(abs(ann.error))
+ann.MAPE <- mean(abs(ann.error)/abs(energy_valid_with_for$mw))*100
+
+#MAPE FOR hand neural net 2  MAPE: 7.88
+hand_2.error<-energy_valid_with_for$mw - energy_valid_with_for$hand_2_nn
+hand_2.MAE <- mean(abs(hand_2.error))
+hand_2.MAPE <- mean(abs(hand_2.error)/abs(energy_valid_with_for$mw))*100
+
+
+
+#plot top n models
+final<-energy_valid_with_for %>% ggplot(aes(x=date_hourly))+
+  geom_line(aes(y=mw,color='Original Series'),size=1.0)+
+  geom_line(aes(y=hand_nn_for,color="Neural Net"),size=1.0)+
+  geom_line(aes(y=prop_for,color="Prophet"),size=1.0)+
+  #geom_line(aes(y=auto_nn_for,color="Auto Neural Net"),size=1.0)+
+  labs(x='Date',y='Hourly Consumption (MW)',color='Models')+
+  scale_color_manual(values = c("Original Series"='black',
+                                "Neural Net" = "cornflowerblue", 
+                                #"Auto Neural Net" = "red",
+                                "Prophet"='orange')) +
+  theme_classic()+
+  theme(plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right",)
+
+
+
+ggsave(final, 
+       filename = "proph-nn.jpg",
+       device = "jpg",
+       height = 5, width = 10, units = "in")
+```

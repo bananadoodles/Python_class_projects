@@ -1,0 +1,263 @@
+---
+title: "DataMiningHW2"
+output: html_document
+author: "Orange 4"
+date: "2024-10-06"
+---
+
+
+## Objectives
+### The scope of services in this phase include:
+#### The creation and discussion of a decision tree model to predict the likelihood of purchasing a
+#### variable rate annuity.
+#### Comparison of accuracy measure of this model on the validation data set compared to the best
+#### Logistic model created.
+#### Visualization (if possible) of the final decision tree model.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(partykit)
+library(tidyverse)
+library(rpart)
+library(ROCit)
+library(ROCR)
+library(rpart.plot)
+library(Hmisc)
+
+
+
+#read in the data
+#TRAIN
+ins_t<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Data_Mining\\insurance_t.csv")
+#VALIDATION
+ins_v<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Data_Mining\\insurance_v.csv")
+
+#get the structure of the training ds
+#there are some NAs but we are leaving them bc trees can deal with them
+str(ins_t)
+  
+##MAKE the binary, nominal and ordinal factors for train set
+ins_t<-ins_t %>%
+  mutate(across(c('BRANCH','RES','DDA',
+                  'DIRDEP','NSF','SAV','ATM','CD','IRA','INV','LOC',
+                  'ILS','MM','MTG','CC','SDB','MOVED',
+                  'INAREA','HMOWN'),as.factor)) %>%
+  mutate(CCPURC=factor('CCPURC',ordered=TRUE),
+         MMCRED=factor('MMCRED',ordered=TRUE),
+         CASHBK=factor('CASHBK',ordered=TRUE))
+
+
+#MAKE the binary, nominal and ordinal factors for validation set
+ins_v<-ins_v %>%
+  mutate(across(c('BRANCH','RES','DDA',
+                  'DIRDEP','NSF','SAV','ATM','CD','IRA','INV','LOC',
+                  'ILS','MM','MTG','CC','SDB','MOVED',
+                  'INAREA','HMOWN'),as.factor)) %>%
+  mutate(CCPURC=factor('CCPURC',ordered=TRUE),
+         MMCRED=factor('MMCRED',ordered=TRUE),
+         CASHBK=factor('CASHBK',ordered=TRUE))
+
+```
+
+## MAKE TREES CONDITIONAL AND TWO RPART TREES (CLASSIFICATION AND PROB)
+```{r}
+#set seed
+set.seed(123)
+
+#CLASSIFICATION TREE since target is binary
+ins.tree = rpart(INS ~ ., data=ins_t, method='class',parms = list(split='gini'))
+#get info
+ins.tree
+
+#CONDITIONAL TREE
+tree1 <- ctree(INS ~ ., data = ins_t)
+#get info
+tree1
+
+#plot trees
+rpart.plot(ins.tree)
+plot(tree1)
+```
+
+
+## PREDICTIONS (TRAINING SET)
+```{r}
+#PREDICT ON TRAINING RPART TREES
+#predict with classification
+tscores_class = predict(ins.tree,ins_t,type='class')
+ins_t$p_hat_class_r<-tscores_class
+#predict with probs
+tscores_probs = predict(ins.tree,ins_t,type='prob')
+ins_t$p_hat_r<-tscores_probs[,2]
+#PREDICT ON TRAINING CONDITIONAL TREE
+ins_t$p_hat_c <- predict(tree1, type = "response")
+```
+
+
+## COEFFICIENT OF DISCRIMINATION (TRAINING SET)
+```{r}
+#RPart tree (0.15)
+p1 <- ins_t$p_hat_r[ins_t$INS == 1]
+p0 <- ins_t$p_hat_r[ins_t$INS == 0]
+coef_discrim_r<- mean(p1) - mean(p0)
+
+#visualise
+coeff_graph_r<-ggplot(ins_t, aes(p_hat_r, fill = factor(INS))) +
+                    geom_density(alpha = 0.7) +
+                    scale_fill_grey() +
+                    labs(x = "Predicted Probability", fill = "Outcome", 
+                    title = paste("Coefficient of Discrimination = ", 
+                    round(coef_discrim_r, 3), sep = ""))
+
+#save plot as jpg
+ggsave(coeff_graph_r, 
+       filename = "coeff_graph_r_tree.jpg",
+       device = "jpg",
+       height = 5, width = 10, units = "in")
+
+
+#Conditional tree(0.239)
+p1_c <- ins_t$p_hat_c[ins_t$INS == 1]
+p0_c <- ins_t$p_hat_c[ins_t$INS == 0]
+coef_discrim_cond <- mean(p1_c) - mean(p0_c)
+
+coeff_graph_cond<-ggplot(ins_t, aes(p_hat_c, fill = factor(INS))) +
+                    geom_density(alpha = 0.7) +
+                    scale_fill_grey() +
+                    labs(x = "Predicted Probability", fill = "Outcome", 
+                    title = paste("Coefficient of Discrimination = ", 
+                    round(coef_discrim_cond, 3), sep = ""))
+
+#save plot as jpg
+ggsave(coeff_graph_cond, 
+       filename = "coeff_graph_cond_tree.jpg",
+       device = "jpg",
+       height = 5, width = 10, units = "in")
+# 0.239 (difference between the average predicted probability of the actual 1s and the average predicted probability of the actual 0s)
+# good at predicted the 0s, not the 1s
+```
+
+
+## ROC AND KS PLOT (TRAINING SET)
+```{r}
+## ROC R PART TREE
+#value       FPR        TPR      cutoff 
+#0.3659052 0.1875560 0.5534613 0.5449102 
+tree_roc_r <-rocit(ins_t$p_hat_r,ins_t$INS)
+plot(tree_roc_r)$optimal
+summary(tree_roc_r)
+#KS plot
+ksplot(tree_roc_r)
+
+
+#CONDITIONAL TREE
+#    value       FPR       TPR    cutoff 
+#0.4570104 0.3431953 0.8002056 0.3631841 
+tree_roc_c<- rocit(ins_t$p_hat_c, ins_t$INS)
+plot(tree_roc_c)$optimal
+summary(tree_roc_c)
+#KS plot
+ksplot(tree_roc_c)
+
+```
+
+## Concordance (TRAINING SET)
+```{r}
+#rpart tree-  0.6953336
+somers2(ins_t$p_hat_r, ins_t$INS)
+
+#CONDITIONAL TREE- 0.7893964 has a lot better concordance
+somers2(ins_t$p_hat_c, ins_t$INS)
+# 78.93% of the time our model was correctly able to predict the 1s over the 0s
+
+##Training misclassification 
+#rpart rate: 27.65%
+#rpart prob 28.88%
+ins_t<- ins_t %>% mutate(r_class=ifelse(p_hat_r > 0.5449102 	, 1, 0))
+tr_misclass<-sum(ins_t$p_hat_class_r!=ins_t$INS)/nrow(ins_t)
+tr_misclass_check<-sum(ins_t$r_class!=ins_t$INS)/nrow(ins_t)
+
+#conditional: 28.7
+ins_t<- ins_t %>% mutate(c_class=ifelse(p_hat_c > 0.3631841 	, 1, 0))
+tc_misclass<-sum(ins_t$c_class!=ins_t$INS)/nrow(ins_t)
+
+```
+
+
+## GOODNESS OF FIT (VALIDATION SET)
+```{r}
+## MAKE PREDICTIONS ON VALIDATION
+
+#RPART-CLASS
+vscores_class = predict(ins.tree,ins_v, type='class')
+ins_v$rclass_v<-vscores_class
+## Validation 28.3 misclass, Class tree, let tree cutoff
+vr_misclass<-sum(ins_v$rclass_v!=ins_v$INS)/nrow(ins_v)
+#accuracy (71.65%)
+acc_r<-1-vr_misclass
+#RPART TREE CONFUSION MATRIX
+table(ins_v$rclass_v, ins_v$INS)
+# 0    1
+#  0 1102  322
+#  1  280  420
+
+
+#RPART-PROB WITH CUTOFF
+#predict and get the probabilty, can pick your own cutoff 
+vscores_probs = predict(ins.tree, ins_v, type='prob')
+ins_v$rprob=vscores_probs[,2]
+#make class from probs
+ins_v<- ins_v %>% mutate(rprob_class=ifelse(rprob > 0.5449102	, 1, 0))
+#### Validation 30.8 misclass, Class tree, let tree cutoff
+v_misclass_rp<-sum(ins_v$rprob_class!=ins_v$INS)/nrow(ins_v)
+#accuracy (69.16%)
+acc_rp<-1-v_misclass_rp
+
+# RPART TREE PROB CONFUSION MATRIX
+table(ins_v$rprob_class, ins_v$INS)
+#       0    1
+#  0 1224  497
+#  1  158  245
+
+
+#CONDITIONAL TREE
+ins_v$c_prob <- predict(tree1, newdata = ins_v, type ="response")
+ins_v <- ins_v %>%
+  mutate(c_class= ifelse(c_prob > 0.3631841 , 1, 0))
+## Validation misclass, Class tree, (30.69%)
+cond_misclass<-sum(ins_v$c_class!=ins_v$INS)/nrow(ins_v)
+#accuracy (69.3%)
+cond_acc<-1-cond_misclass
+
+#CONDITIONAL TREE CONFUSION MATRIX
+table(ins_v$c_class, ins_v$INS)
+#      0   1
+#  0 897 167
+#  1 485 575
+
+
+
+#FROM LOGISITC HW FINAL MODEL
+#ACC 70.43%
+#Misclassification 29.5%
+#for.model <- glm(INS ~ DDA + NSF + IRA + INV + MTG + CC + DDABAL + CHECKS + TELLER + SAVBAL + ATMAMT + CDBAL + ILSBAL + MMBAL + DDA:IRA, data = trainbin, family = binomial(link = "logit"))
+
+```
+
+
+
+## GAINS TABLE (VALIDATION SET)
+```{r}
+#RPART
+rpart_v_roc <- rocit(ins_v$rprob, ins_v$INS)
+rpart_v_lift <- gainstable(rpart_v_roc)
+print(rpart_v_lift)
+plot(rpart_v_lift, type = 1)
+
+#CONDITIONAL-HAS BETTER LIFT
+cond_v_roc <- rocit(ins_v$c_prob, ins_v$INS)
+cond_v_lift <- gainstable(cond_v_roc)
+print(cond_v_lift)
+plot(cond_v_lift, type = 1)
+```
+

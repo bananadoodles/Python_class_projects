@@ -1,0 +1,415 @@
+---
+title: "AA502_TS2_HW1"
+output: html_document
+date: "2024-09-26"
+---
+
+
+#### Your team is tasked with forecasting the electric load for American Electric Power Co. (AEP),
+#### one of the major electricity suppliers in mid-Atlantic. Specifically, you will be forecasting #### hourly energy load for the Appalachian Power Territory of AEP. Electricity load by a power #### #### supplier need forecasts to better meet the needs of customers and prepare
+#### for operationalexpenses.
+```{r setup, include=FALSE}
+#read in libraries
+library(tidyverse)
+library(fpp3)
+library(imputeTS)
+
+
+#read in data
+energy_orig<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered.csv")
+energy_orig_v<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test1.csv")
+
+
+#get data into hourly format.
+energy_hourly_tr<-energy_orig %>%
+  mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
+                      format = "%m/%d/%y %H:%M",
+                      tz = "America/New_York")),
+         date=date(date_hourly),
+         hour=hour(date_hourly),
+         train=1) 
+
+
+energy_hourly_valid<-energy_orig_v %>%
+  mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
+                      format = "%m/%d/%y %H:%M",
+                      tz = "America/New_York")),
+         date=date(date_hourly),
+         hour=hour(date_hourly),
+         train=0) 
+
+energy_hourly<- energy_hourly_tr %>% 
+  rbind(energy_hourly_valid) %>%
+  mutate(color_type=case_when(train==1~'Training',                                                                                train==0~'Validation',
+                            .default='Test'))
+
+
+#plot data 
+#shows the entire dataset by avg daily mw usage with data splits
+#there appears to be clear seasonality, as well as a true outlier either at the end of 2019 or 2020. Will dive into this.
+#THIS GRAPH IS FUGLY
+energy_hourly%>%
+  ggplot(aes(date_hourly,mw,color=color_type))+
+  geom_path(size=1.2)+
+  scale_color_manual(name="Splits",values = c("Training" = "black","Validation"='cornflowerblue'))+
+  labs(x='Time',y='Hourly Consumption (MW)',title='Hourly Consumption (MW) Over Time With Splits')+
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right" ) +
+  scale_x_yearmonth(date_breaks = "6 months", date_labels = "%b %Y")
+
+
+#ggsave(splits, 
+#       filename = "splits.jpg",
+#       device = "jpg",
+#       height = 6, width = 12, units = "in")
+
+
+#look at outlier- June 8th,2019 at 2:00 am 
+#what happened? 
+energy_hourly%>%filter((year(date)==2019) & month(date)==6 & day(date)==8
+                       & hour<=4) %>%
+  ggplot(aes(hour,mw))+
+  geom_path()+
+  labs(x='Time',y='Hourly Consumption (MW)',title='Hourly Consumption (MW) Over Time')+
+  theme_classic()
+
+#looking at spike in 2023, Its christmas, the first one after COVID
+#POSSIBLE THINGS TO ADD TO MODEL LATER-> holidays
+energy_hourly%>%filter(date>='2022-12-01' & date<='2023-01-01') %>%
+  ggplot(aes(date_hourly,mw))+
+  geom_path()+
+  labs(x='Time',y='Hourly Consumption (MW)',title='Hourly Consumption (MW) Over Time')+
+  theme_classic()
+
+
+#average the day light savings in Nov that had two timespots, will impute the ones in March
+energy_hourly<-energy_hourly%>%
+               select(mw,date_hourly,train) %>%
+               group_by(date_hourly,train) %>%
+               summarize(mw=mean(mw)) %>%
+               ungroup()
+
+#make a tsibble with hourly frequency
+energy_hour.ts<-energy_hourly %>%
+as_tsibble(index=date_hourly)
+
+#make implicit missing dates (daylight savings in March), explicit and impute with a spline
+#need to create a flag 
+energy_hour.ts<-fill_gaps(energy_hour.ts)%>% mutate(daylight_impute=case_when(is.na(mw)==TRUE~1,
+                                                                              .default = 0)) %>%
+  na_interpolation(option = "spline")
+energy_hour.ts<-energy_hour.ts%>% mutate(date=date(date_hourly),
+                                      hour=factor(hour(date_hourly),ordered=TRUE))
+  
+#check for gaps to impute, looks ok now
+#energy_hour.ts %>% filter(date=='2018-03-11')
+#energy_hour.ts %>% filter(date=='2022-11-06')
+
+#2018-03-11 02:00:00				
+#2019-03-10 02:00:00				
+#2020-03-08 02:00:00				
+#2021-03-14 02:00:00				
+#2022-03-13 02:00:00				
+#2023-03-12 02:00:00				
+#2024-03-10 02:00:00	
+#scan_gaps(energy_hour.ts)
+
+#get the max date in the dataset
+max_date<-max(energy_hour.ts$date)
+
+#get date one week from max date (to get validation set if needed, will use the test since we are #getting more this week)
+#get date three years from max date (to keep the training set to three years)
+one_week_ct<-max_date - as.difftime(1, unit="weeks")
+three_ya<-max_date -years(3)
+three_ya<-ymd(paste(year(three_ya),month(three_ya),'-01-'))
+
+#make dummy variables
+energy_hour.ts<-energy_hour.ts %>%
+  mutate(month_dummy_col=factor(month(date_hourly),ordered=TRUE),
+         weekend=factor(case_when(weekdays(date_hourly)=='Sunday'~1,
+                           weekdays(date_hourly)=='Saturday'~1,
+                           .default=0)),
+         weekly_dummy_col=factor(weekdays(date_hourly),ordered=TRUE),
+         work_hours=factor(case_when((hour>='8')&(hour<='16')~1,
+                                          .default=0)),
+         seas=factor(case_when((month_dummy_col>='3') & (month_dummy_col<='5') ~'Spring',
+                               (month_dummy_col>='6') & (month_dummy_col<='8')~'Summer',
+                               (month_dummy_col>='9') & (month_dummy_col<='11')~'Fall',
+                               .default='Winter')))
+
+#split into training and validation sets
+energy_hourly_train<-energy_hour.ts %>% filter((date>=three_ya)&(train==1))
+energy_hourly_valid<-energy_hour.ts %>% filter(train==0)
+
+#energy_hourly_train<-energy_hour.ts %>% filter(train==1)
+#energy_hourly_valid<-energy_hour.ts %>% filter(train==0)
+#decompose and show components
+energy_hr_decomp<-energy_hourly_train %>% model(stl=STL(mw))
+#plot components of decomposition, there is a decreasing trend from 2018-2020
+#there is yearly seasonality and there is also daily seasonality
+components(energy_hr_decomp) %>% autoplot() + theme_classic()
+
+```
+
+
+### The data contains monthly information with an annual seasonal component:
+#### Feel free to try different approaches to account for the seasonality.
+#### Explain which approach you use and why.
+```{r}
+##do some plots
+
+#June 8th,2019 at 2:00 am 
+
+#look distributions by month
+#shows outlier at June 8th,2019 at 2:00 am 
+energy_hourly_train %>%
+  ggplot(aes(month_dummy_col,mw,fill=month_dummy_col))+
+  geom_boxplot(notch=TRUE)
+
+
+#look at distributions by day of week
+#Saturday and Sunday are lower
+energy_hourly_train %>%
+  ggplot(aes(weekly_dummy_col,mw,fill=weekly_dummy_col))+
+  geom_boxplot(notch=TRUE)
+
+#look at distributions by hour
+#highest is at hour 5 and 6 pm
+energy_hourly_train %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#look at the hours on the weekends versus the week
+energy_hourly_train %>% filter (weekend==1) %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#look at the hours on the weekends versus the week
+energy_hourly_train %>% filter (weekend==0) %>%
+  ggplot(aes(hour,mw,fill=hour))+
+  geom_boxplot(notch=TRUE)
+
+#boxplots to see how the hours act on the weekend versus non-weekend
+energy_hourly_train %>% 
+  ggplot(aes(x = hour, y = mw, fill = hour))+
+  geom_boxplot()+
+  facet_wrap(~weekend)
+
+energy_hourly_train %>% 
+  ggplot(aes(x = month_dummy_col, y = mw, fill = month_dummy_col))+
+  geom_boxplot()+
+  facet_wrap(~weekend)
+
+```
+
+
+### Build an appropriate Exponential Smoothing Model.
+#### Forecast this model for your validation set only.
+#### Calculate the MAE and MAPE for the validation set.
+```{r}
+#fit additive and multiplicate HOLT WINTERS MODELS
+energy_hourly_fit <- energy_hourly_train %>%  
+model('HWAdd'= ETS(mw ~ error("A") + trend("A") + season("A")),    
+      'HWMult' = ETS(mw ~ error("M") + trend("A") + season("M")))
+
+glance(energy_hourly_fit)
+
+#forecast 24 hours a day *7 days 
+energy_hr_fc_add <- energy_hourly_fit %>% select(HWAdd) %>% fabletools::forecast(new_data=energy_hourly_valid )
+energy_hr_fc_mult <- energy_hourly_fit %>% select(HWMult) %>% fabletools::forecast(new_data=energy_hourly_valid )
+
+hw_add_fc_df<-data.frame(date_hourly=c(energy_hr_fc_add$date_hourly),
+                            hw_add_fc=c(energy_hr_fc_add$.mean))
+
+hw_mult_fc_df<-data.frame(date_hourly=c(energy_hr_fc_mult$date_hourly),
+                              hw_mult_fc=c(energy_hr_fc_mult$.mean))
+
+#join on forecasts to the validation ds to plot and to check accuracy
+energy_hourly_valid <- energy_hourly_valid %>% 
+  left_join(hw_add_fc_df) %>%
+  left_join(hw_mult_fc_df)
+
+#HW-ADD
+fabletools::accuracy(energy_hourly_valid$hw_add_fc, energy_hourly_valid$mw)
+#       ME     RMSE      MAE      MPE     MAPE
+#   69.34711 248.7879 192.6068 1.679124 4.832287
+
+#HW-MULT (HW MULT WINS)
+fabletools::accuracy(energy_hourly_valid$hw_mult_fc, energy_hourly_valid$mw)
+#      ME     RMSE      MAE       MPE     MAPE
+# -52.23364 241.8071 194.0969 -1.268992 4.832108
+```
+
+
+### Build a seasonal ARIMA model.
+#### Describe the approach you used to select the lags of the model.
+#### Forecast this model for your validation set only.
+#### Calculate the MAE and MAPE for the validation set
+
+### ARIMAS WITH REGRESSORS (DUMMY VARIABLES) CHECK RESIDUALS AS WELL
+```{r}
+#FOURIER TRANSFORM
+#first started with different K terms and everything else 0,0,0 to see what Ks are good
+#energy_hr_ar_fr <-energy_hourly_train %>% model(frbase = ARIMA(mw ~ 
+
+#                                             fourier(period='day', K=10)+                         #                                            fourier(period = "week", K = 5) +
+#                                             fourier(period='year',K =3)+PDQ(D=0)),
+#                                             frbase_2 = ARIMA(mw ~ 
+#                                             fourier(period='day', K=8)+                          #                                              fourier(period = "week", K = 5) +
+#                                             fourier(period='year',K =3)++PDQ(D=0)),
+#                                             frbase_3 = ARIMA(mw ~ 
+#                                             fourier(period='day', K=8)+                          #                                              fourier(period = "week", K = 2) +
+#                                             fourier(period='year',K =3)+PDQ(D=0)))
+
+#energy_hr_ar_fr <-energy_hourly_train %>% model(frbase = ARIMA(mw ~ fourier(period='day', K=10)+  #                                                                        fourier(period = "week",K=5)+
+#                                                                    fourier(period='year',K=3)+
+#                                                                    PDQ(2,0,0)+pdq(1,1,3)))
+
+#energy_hr_fr_one_term <-energy_hourly_train %>% model(fr = ARIMA(mw ~ fourier(K=10))
+
+
+#there still looks like there is some correlation I am not getting                                #energy_hr_ar_fr %>% select(frbase) %>% gg_tsresiduals()
+#energy_hr_ar_fr %>% select(frbase_2) %>% gg_tsresiduals()
+#energy_hr_ar_fr %>% select(frbase_3) %>% gg_tsresiduals()
+
+#frbase   LM w/ ARIMA(1,1,3)(2,0,0)[24] errors
+#frbase_2 LM w/ ARIMA(1,1,3)(2,0,0)[24] errors
+#frbase_3 LM w/ ARIMA(1,1,3)(2,0,0)[24] errors
+
+
+# .model   sigma2    log_lik    AIC      AICc
+#frbase	  2380.550	-140072.8 280231.7	280231.8 #lowest is frbase
+#frbase_2	2382.313	-140084.7	280247.4	280247.5
+#frbase_3	2390.985	-140135.6	280337.2	280337.3
+
+# AICc frbase	2378.62	-141080.9	282247.8	282248	
+glance(energy_hr_ar_fr)                                       
+energy_hr_ar__fr_df<-as.data.frame(energy_hr_ar_fr)
+t(energy_hr_ar__fr_df)
+```
+
+# DUMMY VARIABLES
+```{r}
+#ARIMAS using dummy vars
+#do a lm to be able to look at the residuals and their correlation
+
+#STEPWISE
+#energy_dummy_lm <- lm(mw ~(month_dummy_col+weekly_dummy_col+hour+weekend+work_hours+seas)^2, data = energy_hourly_train)
+
+#energy_dummy_lm_1 <- lm(mw ~(month_dummy_col+weekly_dummy_col+hour)^2, data = energy_hourly_train)
+#empty.model_st <- lm(mw ~ 1, data = energy_hourly_train)
+#step.model_aic <- step(empty.model_st,
+# scope = list(lower = empty.model_st,
+# upper = full.model_st),
+# direction = "both",k=2,trace=FALSE) 
+
+    
+energy_dummy_lm=lm(formula = mw ~ (month_dummy_col + weekly_dummy_col + hour)^2, data = energy_hourly_train)
+
+energy_dummy_lm_1=lm(formula = mw ~ (month_dummy_col + weekly_dummy_col + hour), data = energy_hourly_train)
+
+summary(energy_dummy_lm)
+
+energy_hourly_train<- energy_hourly_train %>% mutate(fitted_dm=c(energy_dummy_lm$fitted.values))
+energy_hourly_train<- energy_hourly_train %>% mutate(residuals=c(energy_dummy_lm$residuals))
+energy_hourly_train<- energy_hourly_train %>% mutate(residuals_1=c(energy_dummy_lm_1$residuals))
+
+
+energy_hourly_train %>% 
+  ggplot(aes(date_hourly,residuals))+
+  geom_line()
+
+
+
+#Autocorrelation
+library(forecast)
+#this looks great
+ggAcf(energy_hourly_train$residuals,lag=168)
+ggAcf(energy_hourly_train$residuals_1,lag=168)
+
+#Partial autocorrelation
+ggPacf(energy_hourly_train$residuals,lag=168)
+#try an AR 2
+#look at residuals and see the autocorr graphs, also take a look at stationarity
+
+
+#dum1 ARIMA(2,1,2)(1,0,1)[24] Aicc 281709.4
+energy_hr_ar_dm <-energy_hourly_train %>% model(dum1=ARIMA(residuals~ pdq(2,1,2)+PDQ(1,0,1)))
+glance(energy_hr_ar_dm)                                       
+energy_hr_ar_dm_df<-as.data.frame(energy_hr_ar_dm)
+t(energy_hr_ar_dm_df)
+```
+
+
+# FORECAST ON VALIDATION USING THE BEST ARIMAS ABOVE
+```{r}
+
+library(forecast)
+
+#augment(energy_hr_ar) %>% filter(.model=='search1') %>% features(.innov,ljung_box, lag=24, dof = 6)
+#augment(energy_hr_ar) %>% filter(.model=='search2') %>% features(.innov,ljung_box, lag=24, dof = 5)
+
+energy_hr_fc_fr_ar <- energy_hr_ar_fr %>% select(frbase) %>% fabletools::forecast(new_data=energy_hourly_valid )
+
+
+
+energy_hr_fc_dm_2 <- energy_hr_ar_dm %>% select(dum1) %>% fabletools::forecast(new_data=energy_hourly_valid)
+
+
+energy_hr_fc_ar_df<-data.frame(date_hourly=c(energy_hr_fc_fr_ar$date_hourly),
+                               fr=c(energy_hr_fc_fr_ar$.mean),
+                               dum1=c(energy_hr_fc_dm_2$.mean))
+
+#join on forecasts to the validation ds to plot and to check accuracy
+energy_hourly_valid <- energy_hourly_valid %>% 
+  left_join(energy_hr_fc_ar_df)
+
+#predict the validation set to get values from lm to add back on to the dum ARIMA forecast
+energy_hourly_valid$lm_pred <- predict(energy_dummy_lm, newdata = energy_hourly_valid)
+
+#add the residuals the lm forecast to get full forecast
+energy_hourly_valid<-energy_hourly_valid %>%
+                     mutate(full_dum_fr=dum1+lm_pred) %>%
+                     select(-c(dum1,lm_pred))
+
+
+#FOURIER LM w/ ARIMA(1,1,3)(2,0,0)[24] errors
+fabletools::accuracy(energy_hourly_valid$fr, energy_hourly_valid$mw)
+# ME     RMSE      MAE      MPE    MAPE
+#-92.26465 246.733 206.1436 -2.817346 5.271803
+
+# DUMMY MAPE ARIMA(2,1,2)(1,0,1)[24]
+fabletools::accuracy(energy_hourly_valid$full_dum_fr, energy_hourly_valid$mw)
+#   ME     RMSE      MAE      MPE     MAPE
+# -28.37255 172.1713 129.3738 -0.8221863 3.142167
+
+#DUMMY HAS THE BEST MAPE OF ALL OF THEM.
+
+
+```
+
+
+```{r}
+energy_hourly_valid %>% ggplot(aes(x=date_hourly))+
+  geom_line(aes(y=mw,color='Original Series'),size=1.0)+
+  geom_line(aes(y=fr,color="ARIMA Fourier"),size=0.5)+
+  geom_line(aes(y=full_dum_fr,color="ARIMA Dummy"),size=0.5)+
+  geom_line(aes(y=hw_mult_fc,color="Holt-Winters Mult"),size=0.5)+
+  geom_line(aes(y=hw_add_fc,color="Holt-Winters Add"),size=0.5)+
+  labs(x='Time',y='Hourly Consumption (MW)',title='Forecasts Vs. Validation',color='Models')+
+  scale_color_manual(values = c("Original Series"='black',
+                                "ARIMA Fourier" = "cornflowerblue", 
+                                "Holt-Winters Mult" = "#D55E00",
+                                "Holt-Winters Add"='purple',
+                                "ARIMA Dummy"='green')) +
+  theme_classic()+
+  theme(plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right",)
+
+```
