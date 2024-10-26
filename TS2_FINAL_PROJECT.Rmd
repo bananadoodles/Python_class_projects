@@ -12,6 +12,7 @@ library(tidyverse)
 library(fpp3)
 library(imputeTS)
 library(tis)
+library(lubridate)
 
 
 #read in data
@@ -20,11 +21,14 @@ energy_orig_test_1<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-
 energy_orig_test_2<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test2.csv")
 energy_orig_test_3<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test3.csv")
 energy_orig_test_4<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test4.csv")
-energy_orig_v<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test5.csv")
+energy_orig_test_5<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test5.csv")
+energy_orig_v<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\hrl_load_metered - test6.csv")
 
 temperature_hist<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\app_temp_hist.csv")
 
 temperature_for<-read_csv("C:\\Users\\eebla\\OneDrive\\Documents\\IAA\\AA502-Fall_2\\Time_Series_2\\app_temp_for.csv")
+
+
 
 #get the temp for app area and get rid of the dupe 10-01-2024 I asked it to pull
 temperature<- temperature_hist %>% 
@@ -44,12 +48,18 @@ temp_ts<-temperature %>%
 temp_ts %>% filter(date_hourly>='2024-10-11') %>% ggplot(aes(x=date_hourly,y=temp))+
   geom_line()
 
+#need to get test set 5 in similar format to others
+energy_orig_test_5<-energy_orig_test_5 %>%
+  mutate(date_hourly=(as.POSIXct(strptime(datetime_beginning_ept,"%m/%d/%Y %I:%M:%S %p"),
+                      format = "%m/%d/%y %H:%M",
+                      tz = "America/New_York"))) %>%
+  select(date_hourly,mw) 
+
+
 
 #combine test 1 and test 2 in to the original dataset to use in training
 energy_orig<-energy_orig %>% bind_rows(energy_orig_test_1,energy_orig_test_2,energy_orig_test_3,
                                        energy_orig_test_4)
-
-
 
 
 #get data into hourly format.
@@ -58,23 +68,21 @@ energy_hourly<-energy_orig %>%
   mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
                       format = "%m/%d/%y %H:%M",
                       tz = "America/New_York"))) %>%
-  select(date_hourly,mw)
+  select(date_hourly,mw) %>% 
+  rbind(energy_orig_test_5)
+  #group_by(date_hourly) %>%
+  #summarise(mw=mean(mw))
 
-#we are using 3rd test set as validation
+#we are using 6th test set as validation, joining this on onto train
 energy_hourly_valid<-energy_orig_v %>%
-  mutate(date_hourly=(as.POSIXct(strptime(datetime_beginning_ept,"%m/%d/%Y %I:%M:%S %p"),
+  mutate(date_hourly=(as.POSIXct(datetime_beginning_ept,
                       format = "%m/%d/%y %H:%M",
                       tz = "America/New_York"))) %>%
   select(date_hourly,mw)
-#energy_hourly_valid<-energy_orig_v %>%
-#mutate(date_hourly=(mdy_hms(datetime_beginning_ept))) %>%
-#  select(date_hourly,mw)
-
 
 #get duplicate values to put back in for Nov
 duplicates <- duplicates(energy_hourly,index='date_hourly')
-duplicates <- duplicates %>% slice(c(2, 4, 6, 8, 10, 12))
-
+duplicates <- duplicates %>% dplyr::slice(c(2, 4, 6, 8, 10, 12))
 
 #take the duplicates out to be able to put the ts in a tsibble, will put them back in
 energy_hourly <- energy_hourly %>%
@@ -115,317 +123,201 @@ energy_hourly_valid<-energy_hourly_valid %>%
   mutate(train=0,
          temp_sq=temp^2)
 
-class(temp_ts$date_hourly)  
-class(energy_hourly_valid$date_hourly)
+# Get the last timestamp from valid
+last_timestamp <- tail(energy_hourly_valid$date_hourly, 1)
 
-attr(temp_ts$date_hourly, "tzone")  # Check the time zone
-attr(energy_hourly_valid$date_hourly, "tzone")
+# Generate future timestamps
+future_timestamps <- seq(from = last_timestamp + hours(1), by = 'hour', length.out = 336)
+future<-data.frame(
+  date_hourly = future_timestamps,
+  mw=NA,
+  train=3)
+
+future<-future %>%
+  as_tsibble(index=date_hourly) %>%
+  left_join(temp_ts,by=c('date_hourly')) %>%
+  mutate(temp_sq=temp^2) %>%
+  filter(!is.na(temp)) %>%
+  filter(date_hourly<='2024-11-01')
 
 baseline_temp <- 65
 energy_all<-energy_hour.ts %>% 
   select(date_hourly,mw,train,temp,temp_sq)%>% 
   bind_rows(energy_hourly_valid %>% 
   select(date_hourly,mw,train,temp,temp_sq)) %>%
-  mutate(temp_sq_lag_1=lag(temp_sq,1),
-         temp_sq_lag_2=lag(temp_sq,2),
+  bind_rows(future) %>%
+  mutate(temp_lag_2=lag(temp,2),
          temp_lag_3=lag(temp,3),
-         temp_lag_2=lag(temp,2),
+         temp_lag_4=lag(temp,4),
+         temp_lag_4=lag(temp,24),
          temp_lag_1=lag(temp,1),
+         #mw_lag_owa=(lag(mw,168)),
+         mw_lag_twa=(lag(mw,336)),
+         mw_lag_thwa=(lag(mw,504)),
          HDD=pmax(baseline_temp - temp, 0),
-         CDD=pmax(temp- baseline_temp, 0))
-         # Define baseline temperature (e.g., 18°C)
-
-energy_hour.ts<-energy_all %>% filter(train==1)
-energy_hourly_valid<-energy_all %>% filter(train==0)
-
-
-
-#possibly lag 12 works?
-energy_hourly_valid %>% ggplot(aes(x=date_hourly))+
-  geom_line(aes(y=mw/100,color='Original Series'),size=1.0)+
-  geom_line(aes(y=temp_lag_3,color='Lag3'),size=1.0)+
-  geom_line(aes(y=temp_lag_2,color='Lag2'),size=1.0)+
-  geom_line(aes(y=temp_lag_1,color='Lag1'),size=1.0)+
-  #geom_line(aes(y=temp_lag_11,color="Lag11"),size=1.0)+
-  #geom_line(aes(y=temp_lag_13,color="Lag13"),size=1.0)+
-  labs(x='Date',y='Hourly Consumption (MW)',color='Models')+
-  scale_color_manual(values = c("Original Series"='black',
-                                "Lag3" = "red", 
-                                "Lag2" = "purple",
-                                "Lag1" = "green"))+
-                                #"Lag11" = "cornflowerblue",
-                                #"Lag10"='orange')) +
-  theme_classic()+
-  theme(plot.title = element_text(face = "bold", size = 16),
-        axis.title = element_text(face = "bold"),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        legend.position = "right",)
-
-```
-
-```{r}
-
-energy_hour_train<-energy_hour.ts %>%
-  mutate(date=date(date_hourly),
+         CDD=pmax(temp- baseline_temp, 0),
          month_dummy_col=factor(month(date_hourly),ordered=TRUE),
-         hour=factor(hour(date_hourly),ordered=TRUE),
+         date=date(date_hourly),
+         hour=factor(hour(date_hourly)),
          weekend=factor(case_when(weekdays(date_hourly)=='Sunday'~1,
-                           weekdays(date_hourly)=='Saturday'~1,
+         weekdays(date_hourly)=='Saturday'~1,
                            .default=0)),
+         weeks=factor(week(date_hourly)),
          Cooling = pmax(temp, 65),
-         weekly_dummy_col=factor(weekdays(date_hourly),ordered=TRUE),
-         seas=factor(case_when((month_dummy_col>='3') & (month_dummy_col<='5') ~'Spring',
-                               (month_dummy_col>='6') & (month_dummy_col<='8')~'Summer',
-                               (month_dummy_col>='9') & (month_dummy_col<='11')~'Fall',
-                               .default='Winter')),
-         june_8_2019=case_when(date_hourly=='2019-06-08 02:00:00'~1,
-                                                      .default=0),
-         train=1)
-
-#make some variables to graph and see seasonality that may be going on
-#make intervention variable for power decrease outlier June 8th,2019 at 2:00:00 am
-energy_hourly_valid<-energy_hourly_valid %>%
-                     mutate(month_dummy_col=factor(month(date_hourly),ordered=TRUE),
-                     date=date(date_hourly),
-                     hour=factor(hour(date_hourly),ordered=TRUE),
-                     weekend=factor(case_when(weekdays(date_hourly)=='Sunday'~1,
-                     weekdays(date_hourly)=='Saturday'~1,
-                           .default=0)),
-                     Cooling = pmax(temp, 65),
-                     weekly_dummy_col=factor(weekdays(date_hourly),ordered=TRUE),
+         weekly_dummy_col=factor(weekdays(date_hourly)),
                      seas=factor(case_when((month_dummy_col>='3') & (month_dummy_col<='5') ~'Spring',
                                (month_dummy_col>='6') & (month_dummy_col<='8')~'Summer',
                                (month_dummy_col>='9') & (month_dummy_col<='11')~'Fall',
                                .default='Winter')),
-                     june_8_2019=case_when(date_hourly=='2019-06-08 02:00:00'~1,
+        june_8_2019=case_when(date_hourly=='2019-06-08 02:00:00'~1,
                                                       .default=0),
-                     train=0)
+        dec_2023=case_when(date=='2022-12-23'~1,
+                                      .default=0))
+
+#put in train, valid, and make future df
+energy_hour_train<-energy_all %>% filter(train==1 | train==0)
+energy_hourly_valid<-energy_all %>% filter(train==0)
+energy_hourly_future<-energy_all %>% filter(train==3)
 
 
-#look distributions by month
-#YOU CAN SEE June 8th,2019 at 2:00 am OUTLIER
-energy_hour_train %>%
-  ggplot(aes(month_dummy_col,mw,fill=month_dummy_col))+
-  geom_boxplot(notch=TRUE)
+```
 
-energy_hour_train %>%
-  filter(((date_hourly>='2019-06-08 00:00:00')&(date_hourly<='2019-06-08 04:00:00'))) %>%
-  ggplot(aes(date_hourly,mw))+
-  geom_line()
-#look at distributions by day of week
-#Saturday and Sunday are lower
-energy_hour_train %>%
-  ggplot(aes(weekly_dummy_col,mw,fill=weekly_dummy_col))+
-  geom_boxplot(notch=TRUE)
-
-#look at distributions by hour
-#highest is at hour 5 and 6 pm
-energy_hour_train %>%
-  ggplot(aes(hour,mw,fill=hour))+
-  geom_boxplot(notch=TRUE)
-
-#look at the hours on the weekends versus the week
-energy_hour_train %>% filter (weekend==1) %>%
-  ggplot(aes(hour,mw,fill=hour))+
-  geom_boxplot(notch=TRUE)
-
-#look at the hours on the weekends versus the week
-energy_hour_train %>% filter (weekend==0) %>%
-  ggplot(aes(hour,mw,fill=hour))+
-  geom_boxplot(notch=TRUE)
-
-#boxplots to see how the hours act on the weekend versus non-weekend
-energy_hour_train %>% 
-  ggplot(aes(x = hour, y = mw))+
-  geom_boxplot(fill='blue')+
-  facet_wrap(~weekend)
+```{r}
 
 #get the max date in the dataset
 max_date<-max(energy_hour_train$date)
 
 #get date one week from max date (to get validation set if needed, will use the test since we are #getting more this week)
+
 #get date three years from max date (to keep the training set to three years)
 one_week_ct<-max_date - as.difftime(1, unit="weeks")
 three_ya<-max_date -years(3)
 one_year_ago<-max_date -years(1)
-
+two_week_ct<-max_date - as.difftime(2, unit="weeks")
 
 
 #split into training and validation sets
-energy_hourly_train<-energy_hour_train %>% filter((date_hourly>=three_ya)&(train==1))
-
-
-
-energy_hourly_train |>
-  ggplot(aes(x=temp, y=mw, col=weekend)) +
-  geom_point(alpha = 0.6) +
-  labs(x="Temperature (degrees Celsius)", y="Demand (MW)")
-
-
-energy_hourly_valid |>
-  pivot_longer(mw:temp, names_to = "Series") |>
-  ggplot(aes(x = date_hourly, y = value)) +
-  geom_line() +
-  facet_grid(rows = vars(Series), scales = "free_y") +
-  labs(y = "")
+energy_hourly_train<-energy_hour_train %>% filter((date_hourly>=three_ya))
 
 ```
 
-```{r}
-#with_year    LM w/ ARIMA(2,0,1) errors
-fit <- energy_hourly_train |>
-  model(
-    with_year=ARIMA(mw ~ PDQ() + pdq() +
-          temp+temp_sq + weekend + HDD+CDD+
-          fourier(period = "day", K = 10) +
-          fourier(period = "week", K = 5) +
-          fourier(period = "year", K = 3)))
-#glance(fit)
-#t(fit)
-
-
-
-```
-
-```{r}
-beat_mahesh <- fit %>% select(with_year) %>% fabletools::forecast(new_data=energy_hourly_valid)
-```
 
 ```{r}
 
-energy_dummy_lm=lm(formula = mw ~ HDD+CDD+temp+temp_sq+(month_dummy_col + weekly_dummy_col + hour)^2, data = energy_hourly_train)
+energy_dummy_lm=lm(formula = mw ~ temp+temp_sq+dec_2023+weeks+(+month_dummy_col + weekly_dummy_col + hour)^2, data = energy_hourly_train)
 
-summary(energy_dummy_lm)
-ggplot(energy_hourly_train, aes(x = temp, y = mw)) +
-  geom_point() +
-  geom_smooth(method = "lm", formula = y ~poly(x, 2), color = "blue") +
-  labs(title = "Energy Demand vs Temperature", x = "Temperature (°C)", y = "Energy Demand")
+#summary(energy_dummy_lm)
+#ggplot(energy_hourly_train, aes(x = temp, y = mw)) +
+#  geom_point() +
+#  geom_smooth(method = "lm", formula = y ~poly(x, 2), color = "blue") +
+#  labs(title = "Energy Demand vs Temperature", x = "Temperature", y = "Energy Demand")
 
 energy_hourly_train<- energy_hourly_train %>% mutate(fitted_dm=c(energy_dummy_lm$fitted.values))
-energy_hourly_train<- energy_hourly_train %>% mutate(residuals=c(energy_dummy_lm$residuals))
+energy_hourly_train<- energy_hourly_train %>% mutate(resids=c(energy_dummy_lm$residuals))
 
-
-
-#get a training set that was is one year
-energy_hourly_1y<-energy_hour_train %>% filter(date_hourly>=one_year_ago)
-
+#get a training set that was is one year for neural net
+energy_hourly_1y<-energy_hourly_train %>% filter(date_hourly>=one_year_ago)
 
 energy_hourly_train %>% 
-  ggplot(aes(date_hourly,residuals))+
+  ggplot(aes(date_hourly,resids))+
   geom_line()
 
 #Autocorrelation
 library(forecast)
 #this looks great
-ggAcf(energy_hourly_train$residuals,lag=168)
+ggAcf(energy_hourly_train$resids,lag=168)
 
 #Partial autocorrelation
-ggPacf(energy_hourly_train$residuals,lag=168)
+ggPacf(energy_hourly_train$resids,lag=168)
 
+#ARIMA(resids~pdq(2,1,3)+PDQ(0,0,1))
+#ARIMA(2,1,3)(0,0,1)[24]
+#energy_hr_ar_dm <-energy_hourly_train %>% model(tem=ARIMA(resids~pdq(2,1,3)+PDQ(0,0,1)))
+#forecast
+#energy_hr_tem <- energy_hr_ar_dm%>% 
+#  select(tem) %>% 
+#  fabletools::forecast(new_data=energy_hourly_valid)
+#energy_hr_res_fut <- energy_hr_ar_dm%>% 
+#  select(tem) %>% 
+#  fabletools::forecast(new_data=energy_hourly_future)
 
-#ARIMA(2,1,2)(1,0,1)[24]
-#res ARIMA(1,1,0)(0,0,2)[24]
-#tem ARIMA(2,1,4) <-best     
-energy_hr_ar_dm <-energy_hourly_train %>% model(res=ARIMA(residuals),
-                                                tem=ARIMA(residuals~pdq(p=2)))
-
-#energy_hr_ar <-energy_hourly_train %>% model(tem=ARIMA(mw~temp_lag_11))
-
-glance(energy_hr_ar_dm)                                       
-energy_hr_ar_dm_df<-as.data.frame(energy_hr_ar_dm)
-t(energy_hr_ar_dm_df)
+#glance(energy_hr_ar_dm)                                       
+#energy_hr_ar_dm_df<-as.data.frame(energy_hr_ar_dm)
+#t(energy_hr_ar_dm_df)
 
 #set the seed so we all get the same results each time
 set.seed(123)
-
-energy_hourly_valid<-energy_hourly_valid %>%
-mutate(weekend_num=as.numeric(as.character(weekend)))
-
-energy_hourly_1y<-energy_hourly_1y %>%
-mutate(weekend_num=as.numeric(as.character(weekend)))
-
-
-library(fastDummies)
-# Convert the 'category' factor into dummy variables
-train_with_dummies <- dummy_cols(energy_hourly_1y, select_columns = c("hour",'weekly_dummy_col','month_dummy_col'), remove_first_dummy = TRUE)
-valid_with_dummies <- dummy_cols(energy_hourly_valid, select_columns = c("hour",'weekly_dummy_col','month_dummy_col'), remove_first_dummy = TRUE)
-
-
+#set up neural net with no differences
 model_tmp <-energy_hourly_1y %>%
  model(
- temp_nn = NNETAR(mw~temp+temp_sq)
- 
- )
+ res_nn = NNETAR(resids))
 
-
-
-energy_nn_temp <- model_tmp %>% select(temp_nn) %>% fabletools::forecast(new_data=energy_hourly_valid)
-
-
-energy_nn_residuals <- model_tmp %>% select(residsnn) %>% fabletools::forecast(new_data=energy_hourly_valid)
-
-
-
-
-model_ener_nnet <-energy_hourly_1y %>%
- mutate(diff_mw = difference(mw, 24)) %>%
- model(
- hand = NNETAR(diff_mw~temp_temp_sq,p = 2, P = 3)
- )
-
-model_nn_hand_for <-model_ener_nnet %>%
- select(hand) %>% forecast(energy_hourly_valid)
-
-N <- length(energy_hourly_1y$mw)
-nnet.hand <- rep(NA,168)
-# Reconstruct the forecasts for the 'hand' model
-for(i in 1:168){
-  if(i <= 24){
-    # For the first 24 forecasts, add back the observed values from 24 periods ago
-    nnet.hand[i] <- model_nn_hand_for$.mean[i] + energy_hourly_1y$mw[N - 24 + i]
-  } else {
-    # For forecasts beyond 24 periods, add back the previously forecasted values
-    nnet.hand[i] <- model_nn_hand_for$.mean[i] + nnet.hand[i - 24]
-  }
-}
-
-```
-
-```{r}
-library(fable.prophet)
-
-#model_prophet <- energy_hour_train %>%
-# model(prophet(mw ~ june_8_2019 +
-# growth("linear") + 
-# season(period = 24, order = 11,type='additive') +
- #season(period = "week", order = 5,type='additive') +
-# season(period = "year", order = 3,type='additive')))
-
-
+#forecast the neural net
+#energy_nn_res<- model_tmp %>% select(res_nn) %>% fabletools::forecast(new_data=energy_hourly_valid)
+energy_nn_res_future<- model_tmp %>% select(res_nn) %>% fabletools::forecast(new_data=energy_hourly_future)
 
 
 ```
 
 ```{r}
-energy_hr_res <- energy_hr_ar_dm %>% select(res) %>% fabletools::forecast(new_data=energy_hourly_valid)
-model_prophet_for <- forecast(model_prophet, energy_hourly_valid)
+#XGBoost 
+library(xgboost)
 
-energy_hr_tem <- energy_hr_ar_dm%>% 
-  select(tem) %>% 
-  fabletools::forecast(new_data=energy_hourly_valid)
+#Combine training and validation data for consistent encoding
+combined<-energy_all %>%
+  filter(date_hourly>=three_ya) %>%
+  mutate(mw=ifelse(is.na(mw)==TRUE,0,mw)) %>%
+  select(-c(date,date_hourly))
 
-energy_hr_res <- energy_hr_ar_dm%>% 
-  select(res) %>% 
-  fabletools::forecast(new_data=energy_hourly_valid)
+combined_data_numeric <- model.matrix(~ . -1 , data = combined)
 
+# Split the encoded data back into training and validation sets
+#CHANGED TRAIN TO INCLUDE VALIDATION FOR PRODUCTION
+train.x <- combined_data_numeric[combined_data_numeric[,"train"] ==1 | combined_data_numeric[, "train"]==0, ]
+validation.x<- combined_data_numeric[combined_data_numeric[, "train"] == 0, ]
+future.x<- combined_data_numeric[combined_data_numeric[, "train"] == 3, ]
+
+# Remove the additional 'dataset' columns
+train.x <- train.x[, !colnames(train.x) %in% c("train", "date_hourly","mw")]
+validation.x <- validation.x[, !colnames(validation.x) %in% c("train", "date_hourly","mw")]
+future.x <- future.x[, !colnames(future.x) %in% c("train", "date_hourly","mw")]
+
+
+train_matrix <- xgb.DMatrix(data = train.x, label = energy_hourly_train$mw)
+valid_matrix <- xgb.DMatrix(data = validation.x, label = energy_hourly_valid$mw)
+
+
+#watchlist <- list(train = train_matrix, eval = valid_matrix)
+
+params <- list(
+  eta = 0.1,
+  max_depth=5)
+
+# Get feature importance
+xgb_model <- xgb.train(
+  data = train_matrix,            # Training data
+  nrounds = 500,
+  params=params)
+#  # Number of boosting rounds
+#  watchlist = watchlist,          # Watchlist for monitoring
+# early_stopping_rounds = 10      # Stop if no improvement for 10 rounds
+
+
+importance_matrix <- xgb.importance(model = xgb_model, feature_names = colnames(train_matrix))
+xgb.plot.importance(importance_matrix,rel_to_first = TRUE, top_n = 10)
+
+#xgb_predict<-predict(xgb_model,validation.x )
+xgb_predict_future<-predict(xgb_model,future.x )
+
+```
+
+```{r}
+#basically commented out, all validation stuff
+if(FALSE){
 energy_hr_res_df<-data.frame(date_hourly=c(energy_hourly_valid$date_hourly),
-                               res_for=c(energy_hr_res$.mean),
-                               tem_for=c(energy_hr_tem$.mean),
-                               proph_for=c(model_prophet_for$.mean),
-                               nn_for_2=c(energy_nn_temp$.mean),
-                               bm_for=c(beat_mahesh$.mean),
-                               nn_for=nnet.hand)
-                               #nn_resid=c(energy_nn_residuals$.mean))
+                               #tem_for=c(energy_hr_tem$.mean),
+                               res_nn=c(energy_nn_res$.mean),
+                               xgb_for=xgb_predict)
 
 #join on forecasts to the validation ds to plot and to check accuracy
 energy_hourly_valid <- energy_hourly_valid %>% 
@@ -437,67 +329,133 @@ energy_hourly_valid$lm_pred <- predict(energy_dummy_lm, newdata = energy_hourly_
 
 #add the residuals the lm forecast to get full forecast
 energy_hourly_valid<-energy_hourly_valid %>%
-                     mutate(full_dum_fr=res_for+lm_pred,
-                            tem_for=tem_for+lm_pred)%>%
-                     select(-c(res_for,lm_pred))
+                     mutate(#res_a_for=tem_for+lm_pred,
+                            res_nn_for=res_nn+lm_pred)%>%
+                     select(-c(res_nn))}
 
 ```
 
 ```{r}
+#basically commented out
+if(FALSE){
 energy_hourly_valid<-energy_hourly_valid %>% 
-  mutate(ensemble_for=((tem_for*0.5)+(nn_for_2*0.5)))
+  mutate(ensemble_for=(res_nn_for+xgb_for)/2)
 
-bm.error<-energy_hourly_valid$mw - energy_hourly_valid$bm_for
-bm.MAE <- mean(abs(bm.error))
-bm.MAPE <- mean(abs(bm.error)/abs(energy_hourly_valid$mw))*100
+#XGBoost
+xgb.error<-energy_hourly_valid$mw - energy_hourly_valid$xgb_for
+xgb.MAE <- mean(abs(xgb.error))
+xgb.MAPE <- mean(abs(xgb.error)/abs(energy_hourly_valid$mw))*100
 
-nn2.error<-energy_hourly_valid$mw - energy_hourly_valid$nn_for_2
-nn2.MAE <- mean(abs(nn2.error))
-nn2.MAPE <- mean(abs(nn2.error)/abs(energy_hourly_valid$mw))*100
+#linear model 
+lm.error<-energy_hourly_valid$mw - energy_hourly_valid$lm_pred
+lm.MAE <- mean(abs(lm.error))
+lm.MAPE <- mean(abs(lm.error)/abs(energy_hourly_valid$mw))*100
 
-res.error<-energy_hourly_valid$mw - energy_hourly_valid$full_dum_fr
-res.MAE <- mean(abs(res.error))
-res.MAPE <- mean(abs(res.error)/abs(energy_hourly_valid$mw))*100
-
-
-nn.error<-energy_hourly_valid$mw - energy_hourly_valid$nn_for
+#neural net on lm resids
+nn.error<-energy_hourly_valid$mw - energy_hourly_valid$res_nn_for
 nn.MAE <- mean(abs(nn.error))
 nn.MAPE <- mean(abs(nn.error)/abs(energy_hourly_valid$mw))*100
 
-prop.error<-energy_hourly_valid$mw - energy_hourly_valid$proph_for
-prop.MAE <- mean(abs(prop.error))
-prop.MAPE <- mean(abs(prop.error)/abs(energy_hourly_valid$mw))*100
-
-temp.error<-energy_hourly_valid$mw - energy_hourly_valid$tem_for
-temp.MAE <- mean(abs(temp.error))
-temp.MAPE <- mean(abs(temp.error)/abs(energy_hourly_valid$mw))*100
+#ARIMA on residuals 
+res_a.error<-energy_hourly_valid$mw - energy_hourly_valid$res_a_for
+res_a.MAE <- mean(abs(res_a.error))
+res_a.MAPE <- mean(abs(res_a.error)/abs(energy_hourly_valid$mw))*100
 
 en.error<-energy_hourly_valid$mw - energy_hourly_valid$ensemble_for
 en.MAE <- mean(abs(en.error))
 en.MAPE <- mean(abs(en.error)/abs(energy_hourly_valid$mw))*100
 
 #plot top n models
-energy_hourly_valid %>% ggplot(aes(x=date_hourly))+
+final<-energy_hourly_valid %>% ggplot(aes(x=date_hourly))+
   geom_line(aes(y=mw,color='Original Series'),size=1.0)+
-  geom_line(aes(y=tem_for,color='tem_for'),size=1.0)+
-  #geom_line(aes(y=nn_for,color="Neural Net"),size=1.0)+
-  geom_line(aes(y=nn_for_2,color="nn_for_2"),size=1.0)+
+  geom_line(aes(y=xgb_for,color="XGBoost"),size=1.0)+
+  geom_line(aes(y=res_nn_for,color="Neural Net"),size=1.0)+
   geom_line(aes(y=ensemble_for,color="Ensemble"),size=1.0)+
-  #geom_line(aes(y=esm,color="ESM"),size=1.0)+
-  geom_line(aes(y=bm_for,color="Beat Mahesh"),size=1.0)+
   labs(x='Date',y='Hourly Consumption (MW)',color='Models')+
   scale_color_manual(values = c("Original Series"='black',
-                                "tem_for" = "red", 
-                                #"Neural Net" = "cornflowerblue",
-                                "Beat Mahesh"='purple',
-                                "Ensemble"='green',
-                                "nn_for_2"='orange')) +
+                                "XGBoost" = "cornflowerblue",
+                                "Ensemble"="darkcyan",
+                                "Neural Net"='orange')) +
   theme_classic()+
   theme(plot.title = element_text(face = "bold", size = 16),
         axis.title = element_text(face = "bold"),
         axis.text.x = element_text(angle = 45, hjust = 1),
         legend.position = "right",)
 
+ggsave(final, 
+       filename = "final_ts_3.jpg",
+       device = "jpg",
+       height = 5, width = 10, units = "in")
+}
 
+```
+
+#PREDICT FUTURE VALUES
+```{r}
+energy_hr_future_for<-data.frame(date_hourly=c(energy_hourly_future$date_hourly),
+                               res_nn=c(energy_nn_res_future$.mean),
+                               xgb_for=xgb_predict_future)
+
+
+#join on forecasts to the validation ds to plot and to check accuracy
+energy_hourly_future <- energy_hourly_future %>% 
+  left_join(energy_hr_future_for)
+
+#predict the validation set to get values from lm to add back on to the dum ARIMA forecast
+energy_hourly_future$lm_pred <- predict(energy_dummy_lm, newdata = energy_hourly_future)
+
+
+#add the residuals the lm forecast to get full forecast
+energy_hourly_future<-energy_hourly_future %>%
+                     mutate(res_nn_for=res_nn+lm_pred)%>%
+                     select(-c(res_nn))
+
+
+energy_hourly_future<-energy_hourly_future%>%
+  mutate(ensemble_for=(res_nn_for+xgb_for)/2)
+
+```
+
+# PLOT FORECAST AND write to CSV
+```{r}
+
+
+#plot final models
+future_for<-energy_all %>% 
+  filter(date_hourly>=one_week_ct & date_hourly<='2024-10-31 23:00:00') %>%
+  left_join(energy_hourly_future %>% select(date_hourly,xgb_for,res_nn_for,ensemble_for)) %>%
+  ggplot(aes(x=date_hourly))+
+  geom_line(aes(y=mw,color='Original Series'),size=1.0)+
+  #geom_line(aes(y=xgb_for,color="XGBoost"),size=1.0)+
+  #geom_line(aes(y=res_nn_for,color="Neural Net"),size=1.0)+
+  geom_line(aes(y=ensemble_for,color="Forecast"),size=1.0)+
+  labs(x='Date',y='Hourly Consumption (MW)',color='Models')+
+  scale_color_manual(values = c("Original Series"='black',
+                                #"XGBoost" = "cornflowerblue",
+                                "Forecast"="darkcyan"
+                                #"Neural Net"='orange'
+                                #"ARIMA"='red'
+                                )) +
+  theme_classic()+
+  theme(plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "right",)
+
+ggsave(future_for, 
+       filename = "future_for_ens.jpg",
+       device = "jpg",
+       height = 5, width = 10, units = "in")
+
+```
+
+```{r}
+#get forcasts ready for csv
+final_forecast<-energy_hourly_future %>% 
+  #select(date_hourly,ensemble_for,xgb_for,res_nn_for,res_a_for) %>%
+  select(date_hourly,ensemble_for) %>%
+  filter(date_hourly >='2024-10-25 00:00:00' & date_hourly<'2024-11-01 00:00:00')
+#write forecast to csv
+write.csv(final_forecast, file = "final_forecast_orange4.csv", row.names = FALSE)
 
 ```
